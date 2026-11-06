@@ -61,7 +61,8 @@
           <button id="selectRoleCardBtn" type="button" class="secondary desktop-role-picker-btn">選擇</button>
           <button id="openCreateMenuBtn" type="button">建立</button>
           <button id="globalLorebookBtn" type="button" class="secondary">全局世界書</button>
-          <input id="roleCardImportFile" type="file" class="hidden" accept=".json,.png,.jpg,.jpeg,application/json,image/png,image/jpeg" />
+          <input id="roleCardImportFile" type="file" class="hidden" accept=".json,.png,.jpg,.jpeg,application/json,image/png,image/jpeg" multiple />
+          <input id="roleCardBackupFile" type="file" class="hidden" accept=".json,application/json" />
           <div id="roleCardList" class="card-list role-card-inline-list"></div>
         </div>
 
@@ -170,6 +171,9 @@
           <button id="useDefaultsBtn" type="button" class="secondary">匯入全局設定</button>
           <button id="saveDefaultsBtn" type="button" class="secondary">匯出當前全局設定</button>
           <button id="updateDefaultsBtn" type="button" class="secondary">使用作者預設</button>
+            <button id="exportDataBtn" type="button" class="secondary">匯出 data</button>
+            <button id="importDataBtn" type="button" class="secondary">匯入 data</button>
+            <input id="dataBackupFile" type="file" class="hidden" accept=".zip,application/zip" />
           <input id="globalSettingsFileInput" type="file" class="hidden" accept=".json,application/json" />
         </div>
       </form>
@@ -185,6 +189,8 @@
           <button id="createRoleCardBtn" type="button">建立角色卡</button>
           <button id="createAssistantCardBtn" type="button" class="secondary">建立新助手</button>
           <button id="importRoleCardBtn" type="button" class="secondary">匯入角色卡</button>
+          <button id="importRoleCardBackupBtn" type="button" class="secondary">匯入角色卡備份</button>
+          <button id="exportRoleCardBackupBtn" type="button" class="secondary">匯出角色卡備份</button>
         </div>
       </form>
     </dialog>
@@ -665,6 +671,6 @@
 
     <div id="toast" class="toast"></div>
     <script src="/effects.js?v=20260525-low-power" defer></script>
-    <script type="module" src="/app.js?v=20260918-message-style"></script>
+    <script type="module" src="/app.js?v=20261026-data-manual-restart"></script>
   </body>
 </html>

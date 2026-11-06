@@ -1,6 +1,11 @@
 node_modules/
 .runtime/
 .env
+.env.*
+*.env
+*.env.*
+!.env.example
+.deployment-backups/
 npm-debug.log*
 .DS_Store
 data/

@@ -1,0 +1,17 @@
+services:
+  time-tavern:
+    image: time-tavern:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3234:3234"
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # No volumes: data is initialized at startup and can be restored from a ZIP.

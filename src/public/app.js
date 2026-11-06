@@ -32,6 +32,9 @@ const el = {
   createAssistantCardBtn: document.getElementById("createAssistantCardBtn"),
   importRoleCardBtn: document.getElementById("importRoleCardBtn"),
   roleCardImportFile: document.getElementById("roleCardImportFile"),
+  roleCardBackupFile: document.getElementById("roleCardBackupFile"),
+  importRoleCardBackupBtn: document.getElementById("importRoleCardBackupBtn"),
+  exportRoleCardBackupBtn: document.getElementById("exportRoleCardBackupBtn"),
   roleCardList: document.getElementById("roleCardList"),
   globalLorebookBtn: document.getElementById("globalLorebookBtn"),
   globalLorebookDialog: document.getElementById("globalLorebookDialog"),
@@ -60,6 +63,9 @@ const el = {
   saveDefaultsBtn: document.getElementById("saveDefaultsBtn"),
   updateDefaultsBtn: document.getElementById("updateDefaultsBtn"),
   globalSettingsFileInput: document.getElementById("globalSettingsFileInput"),
+  exportDataBtn: document.getElementById("exportDataBtn"),
+  importDataBtn: document.getElementById("importDataBtn"),
+  dataBackupFile: document.getElementById("dataBackupFile"),
   uiLanguageToggleBtn: document.getElementById("uiLanguageToggleBtn"),
   feedbackLink: document.getElementById("feedbackLink"),
   mobilePageChatBtn: document.getElementById("mobilePageChatBtn"),
@@ -3833,7 +3839,7 @@ async function readRoleCardPayloadFromFile(file) {
   if (isJsonRoleCardFile(file)) {
     return parseRoleCardPayloadText(await file.text());
   }
-  if (!String(file?.type || "").startsWith("image/")) {
+  if (!String(file?.type || "").startsWith("image/") && !/\.(?:png|jpe?g)$/i.test(String(file?.name || ""))) {
     throw new Error("只支援匯入 JSON、PNG、JPG 圖片角色卡。");
   }
   const bytes = new Uint8Array(await file.arrayBuffer());
@@ -3845,25 +3851,112 @@ async function readRoleCardPayloadFromFile(file) {
   return attachImportedImageCover(payload, imageDataUrl);
 }
 
-async function importRoleCardFromFile(file) {
-  if (!file) {
-    return;
+let roleCardImportBusy = false;
+
+function setRoleCardImportBusy(busy) {
+  roleCardImportBusy = busy;
+  for (const button of [el.importRoleCardBtn, el.importRoleCardBackupBtn, el.exportRoleCardBackupBtn]) {
+    if (button) button.disabled = busy;
   }
+}
+
+async function importRoleCardsFromFiles(files) {
+  const selected = Array.from(files || []);
+  if (!selected.length || roleCardImportBusy) return;
+  setRoleCardImportBusy(true);
+  let imported = 0;
+  const failures = [];
   try {
-    const payload = await readRoleCardPayloadFromFile(file);
-    const response = await request("/api/role-cards", {
-      method: "POST",
-      body: JSON.stringify(payload)
-    });
-    appState = response?.state || appState;
-    await refresh();
-    showToast("角色卡已匯入");
-  } catch (error) {
-    showToast(error.message || "角色卡匯入失敗", "error");
-  } finally {
-    if (el.roleCardImportFile) {
-      el.roleCardImportFile.value = "";
+    // Keep shared-state writes serial and retain FileList until the batch is complete.
+    for (const file of selected) {
+      try {
+        showToast(`正在匯入角色卡 ${imported + failures.length + 1}/${selected.length}`);
+        const payload = await readRoleCardPayloadFromFile(file);
+        const response = await request("/api/role-cards", { method: "POST", body: JSON.stringify(payload) });
+        appState = response?.state || appState;
+        imported += 1;
+      } catch (error) { failures.push(`${file.name}：${error.message || "匯入失敗"}`); }
     }
+    if (imported) {
+      try { await refresh(); }
+      catch (error) { window.alert(`已儲存 ${imported} 張，但畫面更新失敗：${error.message}`); }
+    }
+    showToast(`角色卡匯入完成：成功 ${imported} 張，失敗 ${failures.length} 張`, failures.length ? "error" : undefined);
+    if (failures.length) window.alert(`以下檔案匯入失敗，其餘成功項目已保存：\n${failures.join("\n")}`);
+  } finally {
+    if (el.roleCardImportFile) el.roleCardImportFile.value = "";
+    setRoleCardImportBusy(false);
+  }
+}
+
+let dataTransferBusy = false;
+async function transferDataBackup(file = null) {
+  if (dataTransferBusy) return;
+  if (!window.confirm(file
+    ? "將以 ZIP 中的整個 data 取代目前資料（含對話、角色卡、圖片與 API 密鑰）。匯入後進入維護狀態，請手動關閉並重新啟動程式，重啟時會先保存舊資料再還原。若備份改變連接埠，需改用新網址。是否繼續？"
+    : "匯出包含整個 data，以及環境設定、API Key 和 Bot Token。ZIP 未加密，請妥善保管，不要公開分享。是否繼續？")) return;
+  dataTransferBusy = true;
+  el.exportDataBtn.disabled = true;
+  el.importDataBtn.disabled = true;
+  let staged = false;
+  try {
+    if (file && file.size > 256 * 1024 * 1024) throw new Error("ZIP 不可超過 256 MB。");
+    showToast(file ? "正在驗證並暫存 data…" : "正在打包 data…");
+    const response = await fetch(file ? "/api/data/import" : "/api/data/export", file
+      ? { method: "POST", headers: { "Content-Type": "application/zip" }, body: file }
+      : { cache: "no-store" });
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || "data 備份操作失敗");
+    }
+    if (file) {
+      staged = true;
+      const result = await response.json();
+      window.alert(result.message);
+      showToast("備份已暫存，請手動重新啟動程式後再整理網頁");
+    } else {
+      triggerBlobDownload(await response.blob(), "time-tavern-data.zip");
+      showToast("已匯出 data");
+    }
+  } catch (error) { showToast(error.message || "data 備份操作失敗", "error"); }
+  finally {
+    el.dataBackupFile.value = "";
+    dataTransferBusy = false;
+    el.exportDataBtn.disabled = staged;
+    el.importDataBtn.disabled = staged;
+  }
+}
+
+async function exportRoleCardBackup() {
+  if (roleCardImportBusy) return;
+  setRoleCardImportBusy(true);
+  try {
+    const backup = await request("/api/role-cards/backup");
+    triggerBlobDownload(new Blob([`${JSON.stringify(backup, null, 2)}\n`], { type: "application/json" }), "cardstate.json");
+    showToast("已匯出角色卡、助手卡與全局世界書備份");
+  } catch (error) { showToast(error.message || "角色卡備份匯出失敗", "error"); }
+  finally { setRoleCardImportBusy(false); }
+}
+
+async function importRoleCardBackup(file) {
+  if (!file || roleCardImportBusy) return;
+  setRoleCardImportBusy(true);
+  try {
+    if (file.size > 256 * 1024 * 1024) throw new Error("角色卡備份不可超過 256 MB。");
+    const backup = JSON.parse(await file.text());
+    if (!backup || !Array.isArray(backup.roleCards) || !Array.isArray(backup.assistantCards) || !backup.globalLorebook) {
+      throw new Error("請選擇完整的 cardstate.json 角色卡備份。");
+    }
+    if (!window.confirm(`此操作將取代全部角色卡、助手卡與全局世界書。\n備份內有 ${backup.roleCards.length} 張角色卡、${backup.assistantCards.length} 張助手卡。\n系統會先備份現有資料；不匯入環境密鑰或對話。是否繼續？`)) return;
+    const response = await request("/api/role-cards/backup", { method: "POST", body: JSON.stringify(backup) });
+    appState = response?.state || appState;
+    showToast("角色卡備份已還原");
+    try { await refresh(); }
+    catch (error) { window.alert(`備份已還原，但畫面更新失敗，請重新整理網頁：${error.message}`); }
+  } catch (error) { showToast(error.message || "角色卡備份匯入失敗", "error"); }
+  finally {
+    if (el.roleCardBackupFile) el.roleCardBackupFile.value = "";
+    setRoleCardImportBusy(false);
   }
 }
 
@@ -9637,9 +9730,18 @@ function bindEvents() {
       el.roleCardImportFile.click();
     });
     el.roleCardImportFile.addEventListener("change", async () => {
-      await importRoleCardFromFile(el.roleCardImportFile.files?.[0]);
+      await importRoleCardsFromFiles(el.roleCardImportFile.files);
     });
   }
+  el.importRoleCardBackupBtn?.addEventListener("click", () => {
+    el.createMenuDialog?.close();
+    el.roleCardBackupFile?.click();
+  });
+  el.roleCardBackupFile?.addEventListener("change", () => importRoleCardBackup(el.roleCardBackupFile.files?.[0]));
+  el.exportRoleCardBackupBtn?.addEventListener("click", () => {
+    el.createMenuDialog?.close();
+    void exportRoleCardBackup();
+  });
   if (el.roleCardCoverImageFile) {
     el.roleCardCoverImageFile.addEventListener("change", async () => {
       const file = el.roleCardCoverImageFile.files?.[0];
@@ -10051,6 +10153,12 @@ function bindEvents() {
   if (el.saveDefaultsBtn) {
     el.saveDefaultsBtn.addEventListener("click", saveDefaults);
   }
+  el.exportDataBtn?.addEventListener("click", () => { void transferDataBackup(); });
+  el.importDataBtn?.addEventListener("click", () => el.dataBackupFile?.click());
+  el.dataBackupFile?.addEventListener("change", () => {
+    const file = el.dataBackupFile.files?.[0];
+    if (file) void transferDataBackup(file);
+  });
 
   if (el.useDefaultsBtn) {
     el.useDefaultsBtn.addEventListener("click", () => {

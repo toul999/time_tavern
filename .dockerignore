@@ -1,0 +1,9 @@
+# Allowlist: program and defaults only; personal data is imported after startup.
+**
+!package.json
+!package-lock.json
+!src/
+!src/**
+!defaults/
+!defaults/**
+# data/, root .env, backups and internal restore state remain excluded.

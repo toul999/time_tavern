@@ -1,5 +1,8 @@
-﻿import "dotenv/config";
+﻿// Load .env explicitly after any pending data restore.
 import dotenv from "dotenv";
+import { validateCardBackup } from "./card-backup.js";
+import { applyPendingDataArchive, createDataArchive, stageDataArchive, DATA_ARCHIVE_MAX_BYTES } from "./data-backup.js";
+import { startupEnvironment, usesContainerRestart, restartEnvironment } from "./server-restart.js";
 import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
@@ -206,6 +209,7 @@ let activeConversationExecutionContextId = "";
 let displacedWebConversationContext = null;
 const CHARACTER_CARD_CREATION_ASSISTANT_MODE = "CharacterCardCreationAssistant";
 let appDefaultEnvironmentValuesCache = null;
+applyPendingDataArchive(DATA_DIR, ENV_FILE);
 const environmentBackup = syncEnvironmentBackup({ envFile: ENV_FILE, dataDir: DATA_DIR });
 if (environmentBackup.action === "restored") {
   console.log("[設定] 已從 data/environment.env 還原 .env。");
@@ -11640,6 +11644,7 @@ const activeDiscordArchiveReplays = new Map();
 const DISCORD_ARCHIVE_REPLAY_TTL_MS = 30 * 60 * 1000;
 let restartScheduled = false;
 let stateWriteQueue = Promise.resolve();
+let dataMaintenance = false;
 const novelAiVibeEncodeCache = new Map();
 const NOVELAI_VIBE_CACHE_MAX_ENTRIES = 64;
 const NOVELAI_VIBE_CACHE_MAX_BYTES = 8 * 1024 * 1024;
@@ -11661,7 +11666,7 @@ function clearDiscordLoginRetryTimer() {
   discordLoginRetryTimer = null;
 }
 
-function scheduleServerRestart() {
+function scheduleServerRestart(options = {}) {
   if (restartScheduled) {
     return false;
   }
@@ -11674,14 +11679,62 @@ function scheduleServerRestart() {
         return;
       }
       restarted = true;
-      const child = spawn(process.execPath, process.argv.slice(1), {
-        cwd: process.cwd(),
-        env: process.env,
-        stdio: "inherit",
-        detached: true
+      if (usesContainerRestart()) {
+        // Let the supervisor restart the service, rather than creating a detached
+        // child which would be killed when the container's main process exits.
+        process.exit(0);
+        return;
+      }
+      // Restart the server directly: argv[1] may be the Git-update launcher.
+      const logDirectory = path.join(DATA_DIR, ".data-transfer");
+      const logFile = path.join(logDirectory, "restart.log");
+      let log;
+      try {
+        fs.mkdirSync(logDirectory, { recursive: true });
+        log = fs.openSync(logFile, "a", 0o600);
+      } catch (error) {
+        console.error(`無法準備重啟日誌，請手動開啟程式：${error.message}`);
+        process.exit(1);
+        return;
+      }
+      let child;
+      try {
+        child = spawn(process.execPath, [path.join(__dirname, "index.js")], {
+          cwd: path.join(__dirname, ".."),
+          env: restartEnvironment(process.env, startupEnvironment, options.restoreData === true),
+          stdio: ["ignore", log, log, "ipc"],
+          detached: true,
+          windowsHide: true
+        });
+      } catch (error) {
+        fs.closeSync(log);
+        console.error(`重新啟動失敗，請手動開啟程式：${error.message}`);
+        process.exit(1);
+        return;
+      }
+      fs.closeSync(log);
+      let settled = false;
+      const fail = (message) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(startupTimeout);
+        console.error(`重新啟動失敗：${message}。詳細內容：${logFile}。請手動開啟程式，不會自動重試。`);
+        process.exit(1);
+      };
+      const startupTimeout = setTimeout(() => {
+        child.kill();
+        fail("新服務在 120 秒內未完成啟動");
+      }, 120000);
+      child.once("error", error => fail(error.message));
+      child.once("exit", (code, signal) => fail(`新服務在就緒前結束（${code ?? signal}）`));
+      child.on("message", message => {
+        if (settled || message?.type !== "time-tavern-ready") return;
+        settled = true;
+        clearTimeout(startupTimeout);
+        child.disconnect();
+        child.unref();
+        process.exit(0);
       });
-      child.unref();
-      process.exit(0);
     };
 
     try {
@@ -11710,6 +11763,7 @@ function scheduleServerRestart() {
 
 function withStateLock(task, options = {}) {
   const runTask = async () => {
+    if (dataMaintenance) throw Object.assign(new Error("data 備份待還原，請先重啟伺服器。"), { statusCode: 503 });
     const requestedContextId = normalizeConversationContextId(options.contextId);
     if (
       options.requireExistingContext &&
@@ -12480,6 +12534,37 @@ const server = http.createServer(async (req, res) => {
     const pathname = url.pathname;
     const method = (req.method || "GET").toUpperCase();
 
+    if (dataMaintenance && pathname.startsWith("/api/")) {
+      sendJson(res, 503, { error: "data 備份已暫存，請手動關閉並重新啟動程式以還原資料。" });
+      return;
+    }
+    if (pathname === "/api/data/export" && method === "GET") {
+      if (activeGenerationRequest) { sendJson(res, 409, { error: "請先停止生成，再匯出 data。" }); return; }
+      const archive = await withStateLock(() => {
+        saveState(state);
+        syncEnvironmentBackup({ envFile: ENV_FILE, dataDir: DATA_DIR });
+        return createDataArchive(DATA_DIR);
+      });
+      res.writeHead(200, { "Content-Type": "application/zip", "Content-Disposition": 'attachment; filename="time-tavern-data.zip"', "Cache-Control": "no-store" });
+      res.end(archive);
+      return;
+    }
+    if (pathname === "/api/data/import" && method === "POST") {
+      if (activeGenerationRequest) { sendJson(res, 409, { error: "請先停止生成，再匯入 data。" }); return; }
+      const archive = await readRawBody(req, DATA_ARCHIVE_MAX_BYTES);
+      await withStateLock(() => {
+        saveState(state);
+        syncEnvironmentBackup({ envFile: ENV_FILE, dataDir: DATA_DIR });
+        stageDataArchive(DATA_DIR, archive);
+        dataMaintenance = true;
+        clearDiscordLoginRetryTimer();
+        try { activeDiscordClient?.destroy?.(); } catch {}
+        try { activeQqBotClient?.stop?.(); } catch {}
+      });
+      sendJson(res, 200, { restartRequired: true, message: "備份已驗證並暫存。請手動關閉並重新啟動程式，啟動時會自動還原；只重新整理網頁不會套用。" });
+      return;
+    }
+
     if (pathname === "/api/discord/events" && method === "POST") {
       const discordPublicKey = getDiscordPublicKey();
       if (!discordPublicKey) {
@@ -13109,6 +13194,36 @@ const server = http.createServer(async (req, res) => {
         state: statePayload(state)
       }));
       sendJson(res, 200, payload);
+      return;
+    }
+
+    if (pathname === "/api/role-cards/backup" && method === "GET") {
+      sendJson(res, 200, extractCardState(state));
+      return;
+    }
+
+    if (pathname === "/api/role-cards/backup" && method === "POST") {
+      const body = await readBody(req, 256 * 1024 * 1024);
+      let imported;
+      try { imported = validateCardBackup(body); }
+      catch (error) { sendJson(res, 400, { error: error.message }); return; }
+      const result = await withStateLock(() => {
+        const normalized = extractCardState(imported);
+        const backupDirectory = path.join(DATA_DIR, "card-backups");
+        fs.mkdirSync(backupDirectory, { recursive: true });
+        const backupFile = `cardstate-${Date.now()}-${crypto.randomUUID()}.json`;
+        writeJsonFile(path.join(backupDirectory, backupFile), extractCardState(state));
+        const previous = { roleCards: state.roleCards, assistantCards: state.assistantCards, globalLorebook: state.globalLorebook };
+        try {
+          state.roleCards = normalized.roleCards;
+          state.assistantCards = normalized.assistantCards;
+          state.globalLorebook = normalized.globalLorebook;
+          // Persist only the card collection; leave ongoing stories and environment intact.
+          persistCardState(state);
+        } catch (error) { Object.assign(state, previous); throw error; }
+        return { backupFile: `data/card-backups/${backupFile}`, state: statePayload(state) };
+      });
+      sendJson(res, 200, result);
       return;
     }
 
@@ -16139,4 +16254,7 @@ server.listen(PORT, () => {
   console.log(lines.join("\n"));
   setupDiscordBot();
   setupQqBot();
+  if (process.send && process.connected) {
+    process.send({ type: "time-tavern-ready", port: PORT }, () => {});
+  }
 });

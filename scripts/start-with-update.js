@@ -4,6 +4,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 import { syncEnvironmentBackup } from "../src/environment-backup.js";
+import { applyPendingDataArchive } from "../src/data-backup.js";
+import "../src/server-restart.js";
 
 const SCRIPT_FILE = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(SCRIPT_FILE), "..");
@@ -22,6 +24,7 @@ function run(command, args, options = {}) {
     cwd: REPO_ROOT,
     encoding: "utf8",
     timeout: options.timeout ?? UPDATE_TIMEOUT_MS,
+    windowsHide: true,
     stdio: options.inherit ? "inherit" : "pipe"
   });
   if (result.error) {
@@ -265,6 +268,7 @@ export function updateFromTrackedGitBranch() {
 }
 
 async function start() {
+  applyPendingDataArchive(DATA_DIR, ENV_FILE);
   const environmentBackup = syncEnvironmentBackup({ envFile: ENV_FILE, dataDir: DATA_DIR });
   if (environmentBackup.action === "restored") {
     console.log("[設定] 已從 data/environment.env 還原 .env。");
