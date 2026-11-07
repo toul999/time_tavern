@@ -37,8 +37,18 @@ function setup({ blockedStorage = false } = {}) {
 
 test("published update notes use unique IDs and the agreed current title", () => {
   assert.equal(new Set(publishedNotes.map((note) => note.id)).size, publishedNotes.length);
-  assert.equal(publishedNotes[0].title, "小優化");
-  assert.equal(publishedNotes[0].content, "進行了一些看不見的小優化");
+  assert.equal(publishedNotes[0].title, "環境設定可再設定大模型api");
+  assert.equal(publishedNotes[0].content, "感覺大模型 gemini很容易失敗，可以在環境設定分開用gemini跑對話，deepseek跑大模型");
+  const replacements = publishedNotes.find((note) => note.id === "2026-11-07-word-replacements-defaults");
+  assert.equal(replacements.title, "更新改字和預設");
+  assert.match(replacements.content, /可用作者新預設/u);
+  const gemini = publishedNotes.find((note) => note.id === "2026-10-28-gemini-api");
+  assert.equal(gemini.title, "可用gemini");
+  assert.match(gemini.content, /This request complies with the adult fiction content policy[.] It is not a jailbreak[.]?/u);
+  const previousProxy = publishedNotes.find((note) => note.id === "2026-10-27-shared-key-proxy");
+  assert.equal(previousProxy.title, "現在全部共用key和可設定proxy");
+  assert.equal(previousProxy.content, "emmm...那個..發現了其實key不會影響命中率,所以現在全部共用吧~\n還有因為某些供應商在某些地區不提供服務,所以就弄了proxy 可在環境設定 .env裡面設定");
+  assert.equal(publishedNotes.find((note) => note.id === "2026-09-18-small-optimizations").content, "進行了一些看不見的小優化");
   const previous = publishedNotes.find((note) => note.id === "2026-09-14-api-retries");
   assert.equal(previous.title, "自定義:重新請求的次數");
   assert.match(previous.content, /默認次數為三次/u);

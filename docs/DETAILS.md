@@ -7,7 +7,7 @@
 - 切到專案根目錄。
 - 根目錄缺少 `.env` 時，先從 `data/environment.env` 還原。
 - 從 `.env` 讀取 `PORT`，沒有就用 `3234`。
-- 檢查系統 `node` 是否至少為 18 且有 npm；不符合時從 Node.js 官方下載最新 24.x LTS 到 `.runtime/node/`。
+- 檢查系統 `node` 是否至少為 18.17 且有 npm；不符合時從 Node.js 官方下載最新 24.x LTS 到 `.runtime/node/`。
 - 下載的專案 Node.js 會比對官方 `SHASUMS256.txt`，不符合時停止啟動；不需要管理員權限，也不修改系統 Node.js。
 - 檢查 `node_modules/discord.js` 與 `node_modules/opencc-js` 等必要執行依賴，缺少時執行 `npm install`。
 - 打開 `http://localhost:<PORT>`。
@@ -19,6 +19,7 @@
 - NovelAI：會。後端先建立 `data/novelai-defaults.json`；`src/public/novelai.js` 在沒有 localStorage draft 時，會呼叫 `/api/novelai/defaults` 讀取本機預設。
 - 啟動器本身不需要呼叫「匯入全局設定」API；預設由 server 與 NovelAI 頁面自動讀取。
 - 缺少可用 Node.js 時，第一次啟動需要連線至 `nodejs.org`；缺少 npm 套件時也需要連線至 npm registry。之後可重用 `.runtime/node/` 與 `node_modules/`。
+- 目前發布預設包含 22 張角色卡、2 個助手及 5 種 Prompt 模式。
 
 ## 環境變數
 
@@ -31,12 +32,16 @@
 | `CHAT_API_PROVIDER` | `deepseek` | `deepseek`、`openai`、`gemini`、`zhipu`、`openrouter`、`custom`。 |
 | `CHAT_API_RETRY_COUNT` | `3` | 連線及暫時性 HTTP 失敗的額外重試次數，0–20；20 表示首次加上重試最多 21 次。 |
 | `CHAT_API_OPENROUTER_PROVIDER` | 空白 | OpenRouter 推理供應商 slug，例如 `deepinfra`；可選精確端點如 `deepinfra/fp8`。空白自動路由。 |
-| `CHAT_API_KEY` | 空 | Key 1 的主聊天、補寫及角色卡助手 Key。舊設定直接沿用，不需遷移。 |
+| `CHAT_API_KEY` | 空 | 正文、補寫、角色卡助手、壓縮、大模型處理與所有故事共用的對話 Key。舊版主 Key 直接沿用。 |
+| `API_PROXY_URL` | 空 | HTTP／HTTPS 網路代理網址，亦接受 `主機:連接埠`，未指定協定時使用 HTTP；留空直接連線。 |
+| `API_PROXY_USERNAME` | 空 | Proxy Basic 認證使用者名稱。 |
+| `API_PROXY_PASSWORD` | 空 | Proxy 密碼；無認證代理可留空。 |
 | `CHAT_API_BASE_URL` | 依 provider | 只有 `custom` 讀取此值；可填 Base URL 或完整 Chat Completions 路線。其他 provider 固定使用官方網址。 |
 | `CHAT_API_MODEL` | `deepseek-v4-pro` | 主對話模型；Base URL 是完整 deployment URL 時可留空。 |
 | `DEEPSEEK_*` / `OPENAI_*` / `GEMINI_*` / `ZHIPU_*` / `OPENROUTER_*` / `CUSTOM_*` | 空 | 網頁環境設定分開保存各供應商先前使用的 Key、模型與 Base URL；目前供應商的專屬 Key 優先，`CHAT_API_KEY` 只作舊設定後備，執行時不讀取其他供應商的 Key。官方 provider 的 Base URL 覆寫不再生效。 |
-| `CHAT_API_REASONING_EFFORT` | `high` | 共用思考欄位。DeepSeek 空值使用 `high`；GLM 4.5+、Gemini 2.5 Flash／Flash-Lite，以及支援 `none` 的 GPT-5.1+ 非 Pro 模型可選 `none`。模型不支援時不送關閉參數。關閉後啟用 temperature，且不附帶使用者自訂補充。舊版 provider 專用變數仍可讀取。 |
+| `CHAT_API_REASONING_EFFORT` | DeepSeek 為 `high`，其他為 API 預設 | 共用思考欄位。依模型選擇 `minimal`、`low`、`medium`、`high`、`max` 或 `none`，只送出該供應商與模型支援的值。關閉時不附帶使用者自訂補充。舊版 provider 專用變數仍可讀取。 |
 | `CHAT_API_REQUEST_TIMEOUT_MS` | `600000` | 對話 API 逾時，毫秒。 |
+| `CHAT_API_TEST_TIMEOUT_MS` | 沿用對話 API 逾時 | 選填，只覆寫對話連接測試的上限；不再固定限制為 30 秒。 |
 | `CHAT_API_MAX_TOKENS` | `32000` | 輸出 token 上限。 |
 | `CHAT_API_MAX_TOKENS_PARAM` | `max_tokens` | 可改 `max_completion_tokens`。 |
 | `CHAT_API_TEMPERATURE` | `0.5` | 一般對話 temperature，可設定 `0–2` 並支援小數；DeepSeek 思考模式開啟時不生效。 |
@@ -47,12 +52,9 @@
 | `CHAT_IMAGE_API_OPENROUTER_PROVIDER` | 空白 | 圖片 API 獨立的 OpenRouter 推理供應商／端點；空白自動路由。 |
 | `CHAT_IMAGE_API_BASE_URL` | 依 provider | 只有圖片 provider 為 `custom` 時生效；官方 provider 使用固定網址。 |
 | `CHAT_IMAGE_API_MODEL` | 空 | 專用圖片模型；完整 deployment URL 已包含模型時可留空。 |
-| `CHAT_IMAGE_API_REASONING_EFFORT` | 依 provider | 圖片模型獨立思考強度；DeepSeek 空值使用 `high`，可設 `none`、`low`、`high`、`max`。 |
+| `CHAT_IMAGE_API_REASONING_EFFORT` | 依 provider | 圖片模型獨立思考強度；DeepSeek 空值使用 `high`，Gemini 可依模型選擇 `minimal`、`low`、`medium`、`high` 或 `none`。 |
 | `CHAT_IMAGE_API_TEMPERATURE` | API 預設 | 圖片模型獨立 temperature，範圍 `0–2`；思考開啟時不送出。 |
 | `CHAT_IMAGE_API_KEY` | 空 | 專用圖片 API Key；只保存於 `.env` 與 `data/environment.env`。 |
-| `CHAT_API_KEY2` / `CHAT_API_KEY3` | 空 | Key 1 組內的大模型內容處理 Key，按啟用的大模型順序使用；不足時沿用該組最後一把。 |
-| `CHAT_API_KEY_GROUP2` | 空 | Key 2 的主對話 Key；更多分頁依序使用 `CHAT_API_KEY_GROUP3...`。 |
-| `CHAT_API_KEY_GROUP2_2` / `CHAT_API_KEY_GROUP2_3` | 空 | Key 2 組內的大模型內容處理 Key；其他分頁使用相同命名規則。 |
 | `AI_MIN_REPLY_CHARS` | `600` | 回覆太短時嘗試補救。 |
 | `DISCORD_BOT_TOKEN` | 空 | Discord Bot Token。 |
 | `DISCORD_CLIENT_ID` | 從 token 推斷 | 產生 Bot 邀請連結用。 |
@@ -92,23 +94,57 @@ Provider 固定 Base URL（對話與圖片處理共用此對照）：
 
 舊設定若在官方 provider 填了代理、不同區域或 deployment 網址，請改選 `custom`，填回原網址及該服務的 Key／模型；不會自動搬移或混用不同供應商的 Key。圖片 API 同樣適用，且「主要模型直接處理」仍會停用專用欄位並保留內容。
 
-兩組模型欄位都有「取得模型清單」，由本地 server 以尚未保存的設定呼叫 `{base}/models`。對話清單使用目前 Key 分頁的主 Key，圖片清單使用獨立圖片 Key；不租用故事 Key、不呼叫生成、不寫入 AI logs、存檔或 localStorage。選項按模型 ID 排序，可搜尋及手動輸入；刷新不會改掉目前模型。切換供應商、Key 或網址會清掉舊選項，較晚返回的舊請求不會覆蓋新設定。
+兩組模型欄位都有「取得模型清單」，由本地 server 以尚未保存的設定（包含 Proxy 網址、帳號及密碼）呼叫 `{base}/models`。對話清單使用共用對話 Key，圖片清單使用獨立圖片 Key；不呼叫生成、不寫入 AI logs、存檔或 localStorage。選項按模型 ID 排序，可搜尋及手動輸入；刷新不會改掉目前模型。切換供應商、Key、網址或 Proxy 會清掉舊選項，較晚返回的舊請求不會覆蓋新設定。Gemini 官方回傳的 `models/` 前綴會移除，顯示名稱採用官方 `display_name`，聊天與圖片處理都使用正規化後的模型 ID。
+
+只有 DeepSeek 保留舊版未填模型時的預設；其他供應商模型留空時，連接測試與生成會先提示設定模型，不會退回 DeepSeek 模型。模型清單仍可在模型尚未填寫時取得；完整 deployment URL 內含模型的例外維持原狀。Gemini 若在不支援的地區直連，模型清單也可能回傳 HTTP 400；需要 Proxy 時應先填好 Proxy，再取得清單。
+
+Gemini 模型清單仍使用上表的相容介面；網頁對話使用 Google 原生 `streamGenerateContent` 串流輸出，非串流呼叫、圖片理解與連接測試使用 `generateContent`。四類可調整安全過濾設定為 `BLOCK_NONE`。Google 不可調整的保護仍會生效，這項設定不保證所有內容都能生成。詳見 [Google 安全設定](https://ai.google.dev/gemini-api/docs/safety-settings?authuser=7&hl=en)。
+
+Gemini 不會自動加入額外的酒館預設提示詞；正文、助手、壓縮及圖片辨識使用各自現有的提示設定。
 
 [DeepSeek](https://api-docs.deepseek.com/api/list-models)、[OpenAI](https://developers.openai.com/api/reference/resources/models/methods/list)、[Gemini](https://ai.google.dev/gemini-api/docs/openai#list_models) 與 [OpenRouter](https://openrouter.ai/docs/api/api-reference/models/get-models) 提供模型列表介面。智譜目前未在官方文件公開通用 `/models`，因此停用清單按鈕，改連結[官方模型總覽](https://docs.bigmodel.cn/cn/guide/start/model-overview)，由使用者填入模型。自訂服務嘗試標準 `/models`；完整 deployment 網址不猜測清單路線。清單不保證聊天或圖片能力，圖片請另用「測試圖片讀取」驗證。DeepSeek、OpenAI、Gemini 的清單不含價格，介面提供官方計費連結，不估造價目。若顯示本機沒有清單介面，請重啟服務並重新整理頁面。
 
 OpenRouter 的模型作者與實際推理供應商不同。兩組 API 都可由[供應商 API](https://openrouter.ai/docs/api/api-reference/providers/list-all-providers)取得清單，再用 `/models?providers=<slug>` 篩選模型；圖片清單另加 `input_modalities=image`。選模型後只查該模型的[端點 API](https://openrouter.ai/docs/api/api-reference/endpoints/list-all-endpoints-for-a-model)，不逐一查詢全部模型，避免延遲。選單保留原模型／端點，清單缺項時警告，不自動替換。
 
-端點表列出輸入、輸出、快取及其他已提供費率、上下文與輸出上限。token 費率由 USD/token 換算為 USD/百萬 tokens；圖片、請求、搜尋按次／張列出。缺少價格顯示「未提供」，只有明確的 0 才是免費。模型總清單的價格是跨供應商起價，不能當作指定端點價格；實際收費、長上下文與帳號限制以 OpenRouter 為準。AI logs 採用 OpenRouter 回傳的 `usage.cost`（USD），不套用直連 DeepSeek 價格表；未回傳費用不猜測。
+端點表列出輸入、輸出、快取及其他已提供費率、上下文與輸出上限。token 費率由 USD/token 換算為 USD/百萬 tokens；圖片、請求、搜尋按次／張列出。缺少價格顯示「未提供」，只有明確的 0 才是免費。模型總清單的價格是跨供應商起價，不能當作指定端點價格；實際收費、長上下文與帳號限制以 OpenRouter 為準。
 
-指定供應商時，連接測試、正文串流、助手、壓縮、補寫與圖片理解均送出 `provider.only`、`provider.order` 及 `allow_fallbacks:false`；根 slug 包含其區域／量化端點，選表格端點則固定完整 tag。空白使用 OpenRouter 自動路由。詳見[官方路由規則](https://openrouter.ai/docs/guides/routing/provider-selection)。兩組路由設定互相獨立，不改動故事 Key 租用；Key 仍不進入全局匯出或作者預設。清單請求只用目前欄位的 Key，不呼叫付費生成。
+### 獨立大模型 API
+
+環境設定的「大模型 API」可選擇沿用對話 API，或設定獨立的供應商、Base URL、模型、Key、OpenRouter 路由、思考強度及溫度。標準壓縮、自訂大模型與跑圖提示詞大模型共用該設定；正文、補寫、助手及圖片理解不受影響。既有設定預設沿用對話 API，啟用獨立設定後若缺少必要資料會報錯，不會改用其他 Key。Key 只保存在本機環境設定及備份，不包含在作者預設或全局設定匯出中。
+
+### 費用與估算
+
+對話、壓縮、助手與圖片理解共用以下計價規則；AI 紀錄的「實際費用」及「估算費用」按幣種分開加總，未知顯示筆數並排除於總金額，明確回傳的 0 仍保留。
+
+展開的 AI 紀錄只顯示送出內容、思考過程與輸出，費用和快取數據仍在摘要列。Gemini 支援的思考模型會請求思考摘要；供應商未回傳摘要或快取命中數時不推測，舊紀錄也無法補回未保存的內容。
+
+- 實際費用優先：OpenRouter 回傳的 `usage.cost` 按 USD 記錄；所有平台亦可使用 `usage.cost: { "amount": 0.01, "currency": "USD" }`、`usage.cost_usd`／`costUsd`、`cost_cny`／`costCny` 或帶 `currency` 的數值 `cost` 明確回報金額與幣種。未知格式或沒有幣種的非 OpenRouter 數值不猜測。串流最後只回傳 cost 的事件也會保留，不覆蓋先前 Token 數。
+- 自訂單價：環境設定「API 計價」可新增供應商、精確模型 ID、端點、幣種與每百萬 tokens 的輸入／快取讀取／輸出價格；保存到 `.env` 的 `API_PRICING_OVERRIDES` JSON 陣列並同步備份。自訂 API 端點填完整 `/chat/completions` 網址（保存時不保留 query 或認證資訊），OpenRouter 填完整端點 tag；官方直連留空。只對精確匹配的後續請求生效，不會因切換模型而套錯；實際費用優先，其次自訂單價、指定端點費率、官方牌價。快取單價留空代表未知，明確填 0 才是免費。
+- 官方牌價估算：只限供應商與模型 ID 同時精確匹配的已核對項目，沒有匹配就顯示「價格未知」。不以名稱子字串配對，也不讓自訂服務或 OpenRouter 借用直連平台價格。估算記錄來源網址、核對日期、費率及限制；圖片處理使用自己的供應商，而不是主對話設定。
+- OpenRouter 端點估算：讀取指定模型的端點價格時，在記憶體快取最多 50 個模型、一小時。沒有實際費用時，只有目前明確指定的完整端點 tag 與快取精確匹配、Token 及費率足夠、且沒有另外的非零圖片／請求／搜尋／思考／快取寫入費率，才估算。自動路由、端點根名稱、過期價格或缺少必要資料均顯示未知；不為每次生成額外查價。
+- 牌價快照於 2026-10-28 更新：[DeepSeek](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)、[Gemini](https://ai.google.dev/gemini-api/docs/pricing)、[智譜](https://open.bigmodel.cn/pricing)、[OpenAI](https://developers.openai.com/api/docs/pricing)。新增 Argon、Gemini 3.8／3.6／3.5／3.1、GLM 5.3／Flash／FlashX、已核對的免費 Flash、GPT-4.1／4o 與部分 GPT-6 模型，保留既有項目。Argon 優惠價按請求日期計算，2026-12-01 UTC 起切換已公布的標準價；Gemini 3.8／3.6 於 2027-01-01 UTC 起切換。DeepSeek 使用高峰牌價作保守估算；GLM 使用標準牌價，不猜測限時折扣。其他免費額度、特殊服務層級和額外收費以平台帳單為準。
+- 官方牌價快照不是即時帳單，也不會因取得 `/models` 自動更新；沒有可靠價格 API 時，不抓取網頁或混用 OpenRouter 價格。新模型或未核對版本可設定自訂單價；沒有價格或足夠用量時仍顯示具體原因，不捏造金額。沒有發出請求的本地佔位回覆不列入未知費用統計。
+- 歷史紀錄已有金額和價格來源一律保留，不因切換供應商或修改單價而重算。只有未有金額、已保存供應商與完整用量，且日期落在已核實價格有效期間內的紀錄才補估（例如 Argon）；不套用目前手動單價或過期 OpenRouter 快取來倒推舊費用。舊紀錄沒有可確認來源的金額標示為估算，核對日期留空。沒有足夠資料的紀錄不會被填入 0。
+
+指定供應商時，連接測試、正文串流、助手、壓縮、補寫與圖片理解均送出 `provider.only`、`provider.order` 及 `allow_fallbacks:false`；根 slug 包含其區域／量化端點，選表格端點則固定完整 tag。空白使用 OpenRouter 自動路由。詳見[官方路由規則](https://openrouter.ai/docs/guides/routing/provider-selection)。對話與圖片路由設定互相獨立；Key 仍不進入全局匯出或作者預設。清單請求只用目前欄位的 Key，不呼叫付費生成。
 
 環境設定的「測試連線」不傳 `temperature`，由 deployment 使用模型預設值；正式對話仍依 `CHAT_API_TEMPERATURE` 設定送出溫度。
+
+舊版 `CHAT_API_KEY2`、`CHAT_API_KEY_GROUP2` 及供應商的編號／分組 Key 已停用；原主 Key 與各供應商保存的主 Key 繼續使用，保存環境設定時會移除舊欄位。舊故事的 Key 租用資料不再讀取，頻道、對話與存檔維持原樣。專用圖片理解及 NovelAI 使用各自服務的憑證，不會將對話 Key 傳到不同服務。
+
+快取命中主要取決於模型、相同內容前綴、有效期及實際服務端路由。[DeepSeek](https://api-docs.deepseek.com/guides/kv_cache/) 說明自動前綴快取與 best-effort 命中，未承諾每個故事分配一把 API Key 能提升命中率；[OpenAI](https://developers.openai.com/api/docs/guides/prompt-caching) 說明組織與區域隔離，以及模型相關的快取路由；[OpenRouter](https://openrouter.ai/docs/guides/best-practices/prompt-caching) 則受實際推理供應商與端點影響。因此本程式不再以分 Key 提高命中率，也不保證不同帳戶、組織或代理之間共用快取；`prompt_cache_key` 等快取參數與登入用的 API Key 不同。實際命中仍以 API 回傳的 usage 為準。
+
+「API Proxy」是連線代理，不是 API Base URL。所有供應商（包含使用固定官方網址者）的對話串流、正文、壓縮、大模型、補寫、專用圖片理解、NovelAI 及模型／供應商清單都會經過它。連接測試與清單查詢使用表單內尚未保存的 Proxy；保存後，下一次正式請求立即生效，原有請求可完成。關閉代理只需清空 `API_PROXY_URL`。Discord／QQ Bot、附件下載、Git、npm 與瀏覽器連線不套用此代理。
+
+例如 `API_PROXY_URL=http://proxy.example.com:8080`，帳號與密碼分別填入其他兩欄；也支援 `http://使用者:密碼@主機:連接埠`，特殊字元需 URL 編碼，兩個獨立認證欄位有值時優先使用。HTTPS 代理與上游 HTTPS 均維持憑證驗證；代理失敗不自動改成直連，生成仍受既有逾時、重試及停止控制。僅支援 HTTP／HTTPS，未支援 SOCKS。三項 Proxy 設定只保存於 `.env` 與 `data/environment.env`，不放入全局設定匯出、作者預設或 AI logs；匯入全局設定仍保留目前本機 Proxy。
 
 環境設定的「API 失敗重試次數」對應 `CHAT_API_RETRY_COUNT`，保存後下一次請求生效。未設定、空白或無效值預設額外重試 3 次；0 關閉重試，整數上限 20，負數視為 0、過大值限制為 20。只重送同一份模型請求，沿用原 Key、模型、路由和訊息，不重跑整個對話工作流，不重複執行已完成的壓縮或跑圖動作。
 
 適用網頁／Discord／QQ 的主對話、助手、大模型處理、補寫及對話 API 連接測試；不影響專用圖片理解 API、NovelAI 生成、模型清單或 Bot 登入重試。重試 `fetch failed`、暫時性網路連線錯誤及 HTTP 408、429、500、502、503、504；400、401、403、404、無效網址、憑證錯誤不重試。已取得成功回應後的 JSON 解析錯誤、回應讀取失敗與串流中斷不重試，避免重複輸出。
 
-等待依序為 1、2、4、8、10 秒，之後維持 10 秒；上游提供有效 `Retry-After` 時至少等待指定時間。整組失敗重試共用該次 API 逾時上限；連接測試另受原有最多 30 秒限制，因此可能未跑滿設定次數便逾時。`/stop`、網頁停止及逾時都會中止等待，不再發出下一次請求。中間失敗不建立聊天紀錄或重複保存完整 AI log，最終失敗才沿用既有回滾／錯誤顯示。網路斷線無法保證上游尚未處理請求，重試可能重複計費。
+等待依序為 1、2、4、8、10 秒，之後維持 10 秒；上游提供有效 `Retry-After` 時至少等待指定時間。整組失敗重試共用該次 API 逾時上限；對話連接測試使用尚未保存的 `CHAT_API_REQUEST_TIMEOUT_MS`（或明確設定的 `CHAT_API_TEST_TIMEOUT_MS`），圖片連接測試使用圖片 API 的有效逾時，不再額外截短為 30 秒。逾時包括等待、重試及完整回應讀取，錯誤訊息使用這次請求建立時的上限，不讀取之後變更的全局值。計時器最小 1 秒、最大 2,147,483,647 毫秒，避免溢位立即中斷。`/stop`、網頁停止及逾時都會中止等待，不再發出下一次請求。中間失敗不建立聊天紀錄或重複保存完整 AI log，最終失敗才沿用既有回滾／錯誤顯示。網路斷線無法保證上游尚未處理請求，重試可能重複計費。
+
+Gemini 連接測試允許最多 4096 個輸出 tokens（包含模型思考），仍只要求回答 `OK`；不改動正式對話的模型、思考設定或輸出長度。空白回應不再算測試成功，輸出預算耗盡時會單獨提示。Google 說明思考與輸出共用輸出預算，過小的上限可能只產生思考或空白正文，詳見[官方思考文件](https://ai.google.dev/gemini-api/docs/thinking#token-limits-and-max_output_tokens)。
 
 API 成功但 `content` 空白時，仍維持原有一次空白回應重試；輸出長度重試也維持原規則，與此失敗重試設定分開計算。Discord 一般頻道訊息的最終錯誤回覆原頻道並自動刪除；Slash 指令的錯誤則使用僅自己可見的隱藏回覆。
 
@@ -118,7 +154,9 @@ API 成功但 `content` 空白時，仍維持原有一次空白回應重試；�
 
 - DeepSeek 支援關閉及 `low`、`high`、`max`；未指定時維持高強度。
 - GLM 4.5 以上可關閉思考；`reasoning_effort` 強度只在 GLM 5.2 以上送出。
-- Gemini OpenAI-compatible API 目前只為 Gemini 2.5 Flash／Flash-Lite 提供可用的 `none`；Gemini 2.5 Pro 與 Gemini 3 不顯示關閉。
+- Google 對話及圖片 API 使用獨立的 `CHAT_API_REASONING_EFFORT` 與 `CHAT_IMAGE_API_REASONING_EFFORT`：Gemini 2.5 轉成原生 `thinkingBudget`，Gemini 3 及以後的支援模型轉成 `thinkingLevel`。前後端共用模型能力判斷，未知模型使用 API 預設，不猜測能力；未選或不支援的值不送出。詳見 [Google 思考設定](https://ai.google.dev/api/generate-content#ThinkingConfig)。
+- `gemini-4-argon`、Gemini 3.8 Flash、3.1 Pro 支援低／中／高；Argon 官方預設為中。Gemini 3 Pro 提供低／高。Gemini 3 Flash、3.1 Flash-Lite、3.5 Flash-Lite、3.6 Flash 及 Robotics ER 2 另提供 `minimal`（極低）；3.1 Flash-Lite Image 只提供極低／高。
+- Gemini 2.5 Pro／Flash／Flash-Lite 可選低／中／高，其中 Flash／Flash-Lite 可選 `none`；2.5 Pro、Gemini 3 及 Argon 不提供關閉。Google 不提供 `max`；切換供應商留下的 `max` 不會送到 Google。
 - OpenAI 只在支援 `reasoning_effort: none` 的 GPT-5.1 以上非 Pro 模型顯示關閉；其他模型與自訂 provider 保留 API 預設。
 - 只要目前請求實際解析為 `none`，網頁與 Discord 都不會把「使用者自訂補充」附加到該次模型輸入；使用者原訊息及已存資料不會刪除。
 
@@ -135,7 +173,7 @@ GLM 與圖片輸入：
 - 網頁與 Discord 支援 PNG、JPEG、WebP、GIF，可只傳圖片或同時輸入文字。圖片會隨 user 訊息保存，編輯重算與 `/reload` 會保留原附件。
 - `CHAT_IMAGE_INPUT_MODE=main` 時，圖片使用 OpenAI-compatible `messages[].content[]` 的 `image_url` Base64 Data URL 直接交給主要模型，維持舊版行為。
 - `CHAT_IMAGE_INPUT_MODE=specialist` 時，一次最多四張圖片會先交給獨立圖片 API，依序辨識人物、物件、文字、場景、動作與圖片間關係；主要模型、壓縮、補寫與助手只收到隱藏文字描述，不收到原圖。
-- 圖片 API 的思考強度與溫度完全獨立於主要對話。DeepSeek 空白思考設定解析為高強度；選擇 `none` 才會送出圖片溫度，明確選擇低／高／最大時溫度保留但不送出。
+- 圖片 API 的思考強度與溫度完全獨立於主要對話。DeepSeek 空白思考設定解析為高強度；有效思考強度為極低／低／中／高／最大時，溫度保留但不送出。`none` 或未明確控制的 API 預設可送出已設定的溫度。主要模型直接處理模式停用專用欄位，但保留目前內容。
 - 專用辨識結果與圖片及使用者文字的指紋保存在 user 訊息內；`/reload`、`/quick_send` 或訊息編輯的內容完全相同時直接複用，文字或圖片改變才重新辨識。原圖仍保留於聊天與對話存檔。
 - 專用圖片 API 缺少 Key／模型、連線失敗或回傳空白時會停止該回合並套用既有無效對話回滾，不會讓主要模型在沒有圖片資訊時猜測。環境設定的「測試圖片讀取」會實際傳送一張標準 RGBA 32×32 PNG。
 - AI 呼叫紀錄的 purpose 為 `image_understanding`，只保留圖片類型與大小，不保存第二份 Base64。`CHAT_IMAGE_API_KEY` 不加入故事 Key 分頁、作者預設或全局設定匯出。
@@ -185,7 +223,8 @@ Prompt 與大模型：
 - 支援 `3天後` / `三天後` / `第3天`。
 - 自動切換早中晚時，晚上到早上會自動加 1 天。
 - `{{保持時間}}`、`{保持時間}`、`｛保持時間｝` 及對應簡體寫法都會延後自動切換。
-- 快捷劇情指令會按全局語言輸出 `{{保持時間}}`、`｛推進劇情到下一個場景｝`、`｛時間流逝——｝`、`｛繼續｝` 或其簡體版本；括號內補充及另行訊息保留使用者原文。
+- Discord `/quick_send` 會按全局語言輸出 `{{保持時間}}`、`{{進行清潔後}}`、`｛推進劇情到下一個場景｝`、`｛時間流逝——｝`、`｛繼續｝` 或其簡體版本；括號內補充及另行訊息保留使用者原文。
+- Discord 選單的括號統一顯示為半形；實際送出的快捷指令保留原有括號格式。
 
 對話與編輯：
 
@@ -194,7 +233,7 @@ Prompt 與大模型：
 - 建立新助手時依序填寫名稱、簡介、Prompt 與開場對白；Prompt 不會自動帶入寫卡助手內容。
 - 助手模式把 `{{user}}` 當作普通字面內容，不會替換成使用者或角色名稱；角色卡模式維持原有模板替換。
 - 串流生成會先顯示思考/生成過程，正文出現後替換正式內容。
-- `/stop` 或網頁停止按鈕在生成中會取消目前生成；閒置時會釋放目前故事租用的對話 API Key，但不刪除故事或頻道。
+- `/stop` 或網頁停止按鈕會取消目前故事的生成；閒置時只提示沒有正在生成的對話，不修改 Key、故事或頻道。
 - 編輯網頁使用者訊息或 Discord 原始訊息時，會刪除後續分支並重新生成。
 - 編輯較早輸入時會回復該回合前的日期、時間段、切換計數、壓縮內容與目前角色劇情狀態；統計判斷的啟用狀態、時間段更改詞、其他關鍵詞、自動切換設定、正文模型、上下文輪數及其他角色卡狀態均保留目前值。
 - 網頁輸入列可預覽及移除待上傳圖片；Discord 私訊與已啟用頻道會讀取訊息中的支援圖片附件。
@@ -265,7 +304,7 @@ Slash 指令：
 | --- | --- | --- |
 | `/ai_start` | 選填 `num`、選填 `opening` | `num` 未填時等同 `0`，使用該頻道目前角色卡或助手；`1...N` 使用角色卡編號。`opening` 從 `1` 開始，未填時使用角色卡設定的預設開場。 |
 | `/ai_status` | `num` | 只接受數字 `1` 或 `2`：`1` 查看目前頻道狀態；`2` 使用四個按鈕分別切換角色卡及其開場預覽。 |
-| `/stop` | 無 | 生成中停止目前生成；閒置時釋放目前故事租用的 Key，故事仍保留。 |
+| `/stop` | 無 | 停止目前故事的生成；閒置時提示沒有正在生成的對話。 |
 | `/close` | 無 | 關閉並刪除目前 Discord 頻道或私訊的故事；已建立的對話存檔不受影響。 |
 | `/player_set` | `number` | 把自己設定為指定玩家。 |
 | `/reload` | `num`、`comment` | 直接改寫倒數第 `num` 次使用者輸入並重新生成；`1` 代表最近一次。 |
@@ -279,8 +318,8 @@ Discord 行為：
 - Bot 新加入伺服器時，會優先在系統頻道、否則在第一個有權發言的文字頻道送出私人聊天與 `/ai_start` 使用說明。
 - 應用程式安裝到使用者帳號時，`APPLICATION_AUTHORIZED` Webhook 會觸發 Bot 私訊使用說明。
 - 每個伺服器頻道與 Bot 私訊各自保存角色、對話、回合、時間、壓縮內容、模型狀態及玩家分配；在不同頻道使用 `/ai_start` 或 `/archive_return` 不會覆蓋其他頻道故事。AI 呼叫紀錄不按頻道拆分，所有故事共用同一份最近 200 筆紀錄。
-- 每個新故事自動租用目前對話 API 供應商最前面的閒置 Key 組，Key 1 優先；切換供應商會清除舊租用，現有故事在下一次呼叫時改用新供應商重新分配。其他供應商保存的 Key 與分頁不會加入租用，也不會作為失敗回退；新供應商沒有 Key 時會要求先到環境設定填寫。每次實際 AI 呼叫會延長 24 小時，超過 24 小時沒有 AI 活動的組可由新故事接手。所有已設定組都忙碌時會要求新增 Key 組，不會讓兩個活躍故事偷偷共用。
-- 使用網頁刪除或 `/close` 會立即釋放該故事的 Key 組；直接刪除 Discord 頻道也會由 Bot 收到的 `channelDelete` 事件釋放。Bot 重啟不會因頻道查詢失敗或暫時不可見而刪除故事。已建立的對話存檔不受影響。
+- 所有故事、正文、助手、壓縮、補寫及大模型處理共用目前對話供應商的一把主 Key。切換供應商後，所有故事的下一次請求立即使用新供應商的 Key；缺少 Key 時要求設定，不讀取其他供應商的 Key。已移除 Key 分組、額外處理 Key 與 24 小時租用限制；供應商自身的限流、餘額及模型權限仍然適用。
+- 使用網頁刪除、`/close` 或 Discord `channelDelete` 只移除對應故事，不修改共用 Key。Bot 重啟不會因頻道查詢失敗或暫時不可見而刪除故事。已建立的對話存檔不受影響。
 - `/ai_start` 使用目前角色卡及其預設開場；`/ai_start num:22` 使用第 22 張角色卡設定的預設開場；`/ai_start num:22 opening:2` 明確使用開場 2。明確指定的開場只屬於目前頻道，不修改角色卡的全域預設。
 - `/ai_status num:2` 顯示 `預覽（目前開場/開場總數）`；上一張／下一張會回到該卡開場 1，另外兩個按鈕只切換目前角色卡的開場。
 - 角色卡預覽的四個按鈕各自使用唯一 ID；即使位於第一張、最後一張或角色卡沒有多個開場，Discord 也不會因停用按鈕的 ID 重複而拒絕回覆。
@@ -309,7 +348,7 @@ Discord Developer Portal 設定：
 - 只訂閱與處理 `C2C_MESSAGE_CREATE`，不處理群聊、QQ 頻道或主動通知。
 - 在 QQ 開放平台建立官方機器人後，把 AppID 與 AppSecret 填入環境設定並重啟 server；本地 server 透過 Gateway WebSocket 收訊，不需要公開 webhook。
 - 使用者私訊時直接對話，不需要 QQ 指令。該 OpenID 尚未開始故事時，會自動使用網頁目前選中的角色卡或助手；完全未選卡時才提示回網頁選擇。
-- 每個 OpenID 使用獨立 `qq:c2c:*` context，分開保存對話、回合、時間、壓縮內容、角色 runtime、AI logs 與 API Key 租用狀態；網頁的故事選擇器可切換或刪除，已建立存檔不受影響。
+- 每個 OpenID 使用獨立 `qq:c2c:*` context，分開保存對話、回合、時間、壓縮內容及角色 runtime；AI logs 與對話 Key 共用。網頁的故事選擇器可切換或刪除，已建立存檔不受影響。
 - 支援私聊文字與 PNG、JPEG、WebP、GIF 圖片附件；背景跑圖屬於該次私聊回覆。QQ Bot 不支援 Discord Slash 指令、存檔瀏覽按鈕、玩家座位或反應回饋。
 - `QQ_ALLOWED_USER_OPENID` 留空時接受所有能私訊 Bot 的使用者；設定後，其他 OpenID 的訊息會直接忽略。
 
@@ -322,8 +361,8 @@ QQ 私聊文字指令同時接受半形 `!` 與全形 `！`；`!開始` 與 `!�
 | `!ai_start [角色卡編號] [開場編號]` | 開始或重新開始故事；未填角色卡編號時使用目前角色或助手。 |
 | `!ai_status 1` | 查看目前角色、故事狀態與回合。 |
 | `!ai_status 2 [頁數]` | 每頁列出 10 張角色卡及開場數量。 |
-| `!stop` | 生成中停止目前生成；閒置時釋放目前 QQ 故事租用的 Key。 |
-| `!close` | 刪除目前 QQ 故事並釋放 Key；已建立存檔保留。 |
+| `!stop` | 停止目前 QQ 故事的生成；閒置時提示沒有正在生成的對話。 |
+| `!close` | 刪除目前 QQ 故事；已建立存檔及共用 Key 保留。 |
 | `!archive 0 [名稱]` | 保存目前 QQ 對話。 |
 | `!archive 1 [存檔編號]` | 查看指定存檔的資料及最後五回合；未填編號時查看最新一份。 |
 | `!archive_return <0\|1> <存檔編號>` | 載入存檔末端；`0` 顯示開頭五回合，`1` 顯示最後五回合，之後都可直接繼續。 |
@@ -362,6 +401,8 @@ Git 追蹤的 `defaults/app-defaults.json` 與 `defaults/novelai-defaults.json` 
 
 Prompt 模式與助手 Prompt 都包含在全局設定 JSON，不再分散寫入 `prompts/`。目前正在使用的 Prompt 同時保存在 `data/app-state.json`；按下「使用作者預設」後會立即套用作者版本。
 
+改詞規則包含在全局設定匯入、匯出及作者預設中；舊版設定檔沒有改詞欄位時保留現有規則。首次啟動使用隨附作者預設。
+
 可提交的發布內容：
 
 - `defaults/app-defaults.json`
@@ -371,7 +412,11 @@ Prompt 模式與助手 Prompt 都包含在全局設定 JSON，不再分散寫入
 
 自動更新只處理 Git 追蹤的程式與發布預設。`data/`、`.env`、角色卡與目前對話不會被 Git 更新；舊版追蹤檔中的使用者預設或 Prompt 改動會先遷移到 `data/`。
 
+自動更新只在 `npm start` 啟動時檢查一次；工作區乾淨且分支可 fast-forward 時更新，離線、本機程式檔改動或分支分岔時保留現有版本。直接執行 `node src/index.js` 不會檢查更新；設定 `TIME_TAVERN_AUTO_UPDATE=0` 可關閉啟動時檢查。後端更新後需重啟服務，只刷新網頁不足以載入新後端。
+
 自動更新因本機程式檔改動而跳過時，可停止服務、備份整個 `data/`、取得乾淨的新版本，再只把 `data/` 放回新版本。啟動器會用 `data/environment.env` 還原缺少的 `.env`。備份包含 Token 與 API Key，不可公開。
+
+NovelAI 圖片歷史與參考圖草稿保存在瀏覽器，不包含在 `data/` 備份中；NovelAI 收藏則保存在 `data/novelai-album/`。
 
 ## HTTP API
 
@@ -405,7 +450,7 @@ Prompt 模式與助手 Prompt 都包含在全局設定 JSON，不再分散寫入
 | `POST` | `/api/messages/:id/replay-edit` | 編輯 user 訊息並重跑。 |
 | `POST` | `/api/messages/:id/feedback` | 喜歡 / 不喜歡 / 取消回饋。 |
 | `POST` | `/api/chat/send-stream` | 網頁串流送出一輪對話。 |
-| `POST` | `/api/chat/stop` | 生成中停止目前生成；閒置時釋放目前故事租用的 Key。 |
+| `POST` | `/api/chat/stop` | 停止目前故事的生成；閒置時不修改 Key 或故事。 |
 | `POST` | `/api/chat/reload` | 依 `num`、`comment` 改寫較早的使用者輸入並重算。 |
 | `GET` / `POST` | `/api/sessions`、`/api/sessions/save` | 列出或建立網頁對話存檔。 |
 | `GET` / `DELETE` | `/api/sessions/:id` | 預覽或刪除網頁對話存檔。 |

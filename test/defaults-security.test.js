@@ -17,6 +17,10 @@ test("published defaults exclude bot credentials and identifiers", () => {
   assert.equal(Object.hasOwn(environmentValues, "QQ_BOT_APP_SECRET"), false);
   assert.equal(Object.hasOwn(environmentValues, "QQ_ALLOWED_USER_OPENID"), false);
   assert.equal(Object.hasOwn(environmentValues, "CHAT_IMAGE_API_KEY"), false);
+  assert.equal(Object.hasOwn(environmentValues, "CHAT_MODEL_API_KEY"), false);
+  for (const key of ["API_PROXY_URL", "API_PROXY_USERNAME", "API_PROXY_PASSWORD"]) {
+    assert.equal(Object.hasOwn(environmentValues, key), false);
+  }
   assert.deepEqual(
     Object.keys(environmentValues).filter((key) => /(?:^|_)API_KEY$/u.test(key)),
     []
@@ -25,6 +29,18 @@ test("published defaults exclude bot credentials and identifiers", () => {
     Object.keys(environmentValues).filter((key) => /API_KEY_GROUP/iu.test(key)),
     []
   );
+});
+
+test("published defaults exclude conversation progress and saved histories", () => {
+  for (const key of ["conversation", "savedSessions", "aiLogs"]) {
+    assert.equal(Object.hasOwn(publishedDefaults, key), false);
+  }
+  assert.deepEqual(publishedDefaults.roleCardRuntimeState, {});
+  assert.equal(publishedDefaults.contextCompression.summary, "");
+  assert.equal(publishedDefaults.contextCompression.compressedThroughTurnNumber, 0);
+  assert.deepEqual(publishedDefaults.contextCompression.profiles, {});
+  assert.equal(publishedDefaults.timeTracking.autoPeriod.turnsSinceChange, 0);
+  assert.equal(publishedDefaults.timeTracking.pendingTransition, null);
 });
 
 test("global settings files exclude secrets and preserve local credentials on import", () => {

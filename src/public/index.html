@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-Hant">
   <head>
     <meta charset="UTF-8" />
@@ -6,7 +6,7 @@
     <title>時分居酒屋</title>
     <link rel="icon" type="image/png" href="/assets/img/icon.png" />
     <link rel="apple-touch-icon" href="/assets/img/icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=20260918-novelai-cleanup" />
+    <link rel="stylesheet" href="/styles.css?v=20261027-pricing-sources" />
     <link rel="modulepreload" href="/ui-language.js" />
     <link rel="modulepreload" href="/vendor/opencc-t2cn.js" />
     <link rel="modulepreload" href="/vendor/opencc-cn2t.js" />
@@ -74,6 +74,7 @@
 
         <div class="actions-block">
           <h2>功能按鈕</h2>
+          <button id="wordReplacementsBtn" type="button" class="secondary">改詞</button>
           <button id="editAiOutputBtn" type="button">編輯AI的輸出對話</button>
           <button id="contextCompressionInspectBtn" type="button">查看/編輯模型內容</button>
           <button id="timeTrackingSettingsBtn" type="button" class="secondary">統計判斷編輯</button>
@@ -191,6 +192,19 @@
           <button id="importRoleCardBtn" type="button" class="secondary">匯入角色卡</button>
           <button id="importRoleCardBackupBtn" type="button" class="secondary">匯入角色卡備份</button>
           <button id="exportRoleCardBackupBtn" type="button" class="secondary">匯出角色卡備份</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="wordReplacementsDialog" class="dialog prompt-viewer-dialog">
+      <form id="wordReplacementsForm" method="dialog" class="stack">
+        <h3>改詞</h3>
+        <label class="checkbox-label"><input id="wordReplacementsEnabled" type="checkbox" /> 啟用改詞</label>
+        <div id="wordReplacementsList" class="word-replacements-list"></div>
+        <button id="addWordReplacementBtn" type="button" class="secondary">新增規則</button>
+        <div class="dialog-actions">
+          <button type="submit">保存</button>
+          <button id="closeWordReplacementsBtn" type="button">關閉</button>
         </div>
       </form>
     </dialog>
@@ -671,6 +685,6 @@
 
     <div id="toast" class="toast"></div>
     <script src="/effects.js?v=20260525-low-power" defer></script>
-    <script type="module" src="/app.js?v=20261026-data-manual-restart"></script>
+    <script type="module" src="/app.js?v=20261107-upstream-custom-merge"></script>
   </body>
 </html>

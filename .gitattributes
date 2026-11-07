@@ -1,0 +1,3 @@
+# Prompt/API tests extract function blocks; use consistent newlines on all hosts.
+*.js text eol=lf
+*.html text eol=lf

@@ -4,8 +4,9 @@ import fs from "node:fs";
 import vm from "node:vm";
 import { listChatApiModels, listOpenRouterProviders, listOpenRouterModelEndpoints, normalizeOpenRouterPricing, buildChatApiCompletionsUrl, isDeploymentChatCompletionsUrl, resolveChatApiModelForEndpoint, adaptChatApiRequestBody, buildChatApiRequestHeaders } from "../src/chat-api-endpoint.js";
 import { buildChatApiRequestBody, fetchChatApiWithRetry, normalizeChatApiRetryCount } from "../src/chat-api-request.js";
+import { getManualApiPricing } from "../src/public/api-price-overrides.js";
 import { createChatApiProviderDrafts, getChatApiProviderEnvEntries, getOfficialChatApiBaseUrl } from "../src/public/chat-api-provider-settings.js";
-import { resolveChatApiKeyGroupPrimaryKey } from "../src/chat-api-key-config.js";
+import { resolveChatApiKey } from "../src/chat-api-key-config.js";
 
 const config = { provider: "openrouter", baseUrl: "https://openrouter.ai/api/v1", apiKey: "test-only-key" };
 const json = (data, status = 200) => new Response(JSON.stringify(data), { status });
@@ -33,6 +34,68 @@ test("model listing handles provider base paths, full completions URLs and query
     assert.equal(url, "https://example.test/v1/models?api-version=v1");
     return json({ data: [] });
   });
+});
+
+test("Gemini model listing normalizes actual Google resource IDs and display names", async () => {
+  const result = await listChatApiModels({ ...config, provider: "gemini", baseUrl: getOfficialChatApiBaseUrl("gemini") }, async (url, options) => {
+    assert.equal(url, "https://generativelanguage.googleapis.com/v1beta/openai/models");
+    assert.equal(options.headers.Authorization, "Bearer test-only-key");
+    return json({ object: "list", data: [
+      { id: "models/gemini-2.5-pro", display_name: "Gemini 2.5 Pro" },
+      { id: "models/gemini-2.5-flash", display_name: "Gemini 2.5 Flash" },
+      { id: "gemini-2.5-flash", display_name: "Gemini 2.5 Flash" }
+    ] });
+  });
+  assert.deepEqual(result, [
+    { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash" },
+    { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro" }
+  ]);
+});
+
+test("Gemini region failures explain proxy settings without exposing upstream response text", async () => {
+  const gemini = { ...config, provider: "gemini", baseUrl: getOfficialChatApiBaseUrl("gemini") };
+  await assert.rejects(listChatApiModels(gemini, async () => json({ error: { message: "User location is not supported for the API use. secret-key" } }, 400)), error => {
+    assert.match(error.message, /HTTP 400.*地區.*API Proxy/u);
+    assert.doesNotMatch(error.message, /secret-key/u);
+    return true;
+  });
+  await assert.rejects(listChatApiModels(gemini, async () => json({ error: { message: "secret-key" } }, 400)), /HTTP 400/u);
+  await assert.rejects(listChatApiModels(gemini, async () => new Response("not json", { status: 400 })), /HTTP 400/u);
+});
+
+test("both web model catalogs include unsaved proxy credentials and invalidate their snapshot when changed", () => {
+  const source = fs.readFileSync(new URL("../src/public/app.js", import.meta.url), "utf8");
+  const fields = {
+    envField_API_PROXY_URL: "http://127.0.0.1:7890",
+    envField_API_PROXY_USERNAME: "unsaved-user",
+    envField_API_PROXY_PASSWORD: "unsaved-password",
+    envField_CHAT_API_PROVIDER: "gemini",
+    envField_CHAT_API_MODEL: "",
+    chatApiPrimaryKeyInput: "gemini-test-key",
+    envField_CHAT_IMAGE_API_PROVIDER: "openrouter",
+    envField_CHAT_IMAGE_API_KEY: "image-test-key"
+  };
+  const scope = vm.createContext({ document: { getElementById: id => Object.hasOwn(fields, id) ? { value: fields[id] } : null } });
+  const start = source.indexOf("function getApiModelListDraft(");
+  vm.runInContext(source.slice(start, source.indexOf("\n}", start) + 2), scope);
+  for (const provider of ["deepseek", "openai", "gemini", "zhipu", "openrouter", "custom"]) {
+    for (const prefix of ["CHAT_API", "CHAT_IMAGE_API"]) {
+      fields[`envField_${prefix}_PROVIDER`] = provider;
+      const before = scope.getApiModelListDraft(prefix);
+      assert.equal(before[`${prefix}_PROVIDER`], provider);
+      assert.equal(before.API_PROXY_URL, fields.envField_API_PROXY_URL);
+      assert.equal(before.API_PROXY_USERNAME, fields.envField_API_PROXY_USERNAME);
+      assert.equal(before.API_PROXY_PASSWORD, fields.envField_API_PROXY_PASSWORD);
+      assert.equal(before[`${prefix}_KEY`], prefix === "CHAT_API" ? "gemini-test-key" : "image-test-key");
+      assert.equal(before[`${prefix}_MODEL`], "");
+      for (const key of ["API_PROXY_URL", "API_PROXY_USERNAME", "API_PROXY_PASSWORD"]) {
+        const original = fields[`envField_${key}`];
+        fields[`envField_${key}`] += "changed";
+        assert.notEqual(JSON.stringify(scope.getApiModelListDraft(prefix)), JSON.stringify(before));
+        fields[`envField_${key}`] = original;
+      }
+    }
+  }
 });
 
 test("model listing follows bounded cursor pagination", async () => {
@@ -88,17 +151,18 @@ test("model list aborts a slow upstream after 15 seconds", async () => {
   await assert.rejects(pending, /逾時/u);
 });
 
-test("OpenRouter key groups and models survive switching without borrowing another provider key", () => {
+test("OpenRouter primary key and model survive switching without retaining old groups", () => {
   const { drafts } = createChatApiProviderDrafts({
     CHAT_API_PROVIDER: "openrouter", OPENROUTER_API_KEY: "router-1", OPENROUTER_API_KEY2: "router-processing",
     OPENROUTER_API_KEY_GROUP2: "router-2", OPENROUTER_MODEL: "openai/gpt-4.1", DEEPSEEK_API_KEY: "deepseek-1"
   });
   const env = Object.fromEntries(getChatApiProviderEnvEntries(drafts));
   assert.equal(env.OPENROUTER_MODEL, "openai/gpt-4.1");
-  assert.equal(env.OPENROUTER_API_KEY2, "router-processing");
-  assert.equal(resolveChatApiKeyGroupPrimaryKey(env, "openrouter", 2), "router-2");
-  assert.equal(resolveChatApiKeyGroupPrimaryKey({ DEEPSEEK_API_KEY: "other" }, "openrouter"), "");
-  assert.equal(resolveChatApiKeyGroupPrimaryKey(env, "deepseek"), "deepseek-1");
+  assert.equal(env.OPENROUTER_API_KEY2, undefined);
+  assert.equal(env.OPENROUTER_API_KEY_GROUP2, undefined);
+  assert.equal(resolveChatApiKey(env, "openrouter"), "router-1");
+  assert.equal(resolveChatApiKey({ DEEPSEEK_API_KEY: "other" }, "openrouter"), "");
+  assert.equal(resolveChatApiKey(env, "deepseek"), "deepseek-1");
 });
 
 test("OpenRouter provider catalog and provider-filtered vision models use separate official APIs", async () => {
@@ -154,8 +218,8 @@ test("OpenRouter routing is strict only when selected and never leaks to direct 
 
 test("OpenRouter usage keeps actual USD charges including free usage without direct-provider estimation", async () => {
   const source = fs.readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
-  const scope = vm.createContext({ safeText: (value) => String(value ?? "").trim(), TextDecoder });
-  for (const name of ["normalizeAiUsageCost", "normalizeAiUsage", "calculateAiUsageCost", "extractChatApiMessageText", "hasUsageTokens", "readChatApiStreamBody"]) {
+  const scope = vm.createContext({ safeText: (value) => String(value ?? "").trim(), TextDecoder, openRouterEndpointPricing: new Map(), CHAT_API_COST_PRICING: [], getManualApiPricing, process: { env: {} } });
+  for (const name of ["nonNegativeUsageNumber", "normalizeAiUsageCost", "normalizeAiUsage", "getAiUsagePricingForModel", "calculateAiUsageCost", "extractChatApiMessageText", "hasUsageTokens", "readChatApiStreamBody"]) {
     const start = source.indexOf(`${name === "readChatApiStreamBody" ? "async " : ""}function ${name}(`);
     vm.runInContext(source.slice(start, source.indexOf("\n}", start) + 2), scope);
   }
@@ -173,13 +237,17 @@ test("OpenRouter usage keeps actual USD charges including free usage without dir
 });
 
 test("all four real request paths send independently selected inference routes", async () => {
+  const { normalizeWordReplacements, prepareWordReplacementMessages, restoreReplacedWords, createWordRestorer } = await import("../src/word-replacements.js");
   const source = fs.readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
   const sent = [];
   const mainConfig = { ...config, model: "author/model", completionsUrl: `${config.baseUrl}/chat/completions`, openrouterProvider: "deepinfra/fp8" };
   const scope = vm.createContext({
+    normalizeWordReplacements, prepareWordReplacementMessages, restoreReplacedWords, createWordRestorer,
+    useSpecialistModelApi: () => false,
     process: { env: {} }, state: {}, DEFAULT_CHAT_IMAGE_API_MAX_TOKENS: 1024,
-    buildChatApiRequestBody, adaptChatApiRequestBody, buildChatApiRequestHeaders, clearTimeout,
+    buildChatApiRequestBody, adaptChatApiRequestBody, buildChatApiRequestHeaders, isDeploymentChatCompletionsUrl, clearTimeout,
     normalizeChatApiRetryCount,
+    fetchGeminiNative: (url, options, fetchImpl) => fetchImpl(url, options),
     fetchChatApiWithRetry: (url, options, config) => fetchChatApiWithRetry(url, options, { ...config, fetchImpl: scope.fetch }),
     resolveChatApiTestConfig: () => mainConfig,
     resolveChatImageApiConfig: () => ({ ...mainConfig, openrouterProvider: "azure/us" }),
@@ -192,13 +260,14 @@ test("all four real request paths send independently selected inference routes",
     getChatApiTemperature: () => 0.5, resolveChatApiMaxTokens: () => 1024,
     getChatApiReasoningEffort: () => "", getUiLanguage: () => "zh-TW",
     localizeChatApiMessages: (messages) => messages,
-    sanitizeChatApiMessagesForLog: (messages) => messages,
+    sanitizeChatApiMessagesForLog: (messages) => [...messages],
     appendAiLogToState() {}, appendAiLog() {}, nowIso: () => "2026-09-08T00:00:00Z",
     createTimeoutController: () => ({ controller: new AbortController(), cleanup() {} }),
     isGenerationStoppedError: () => false, formatFetchErrorMessage: () => "mock transport stopped",
     safeText: (value) => String(value ?? "").trim(),
     fetch: async (url, options) => { sent.push({ url, body: JSON.parse(options.body) }); throw new Error("mock transport stopped"); }
   });
+  scope.fetchModelApi = scope.fetch;
   for (const name of ["testChatApiConnection", "requestChatImageUnderstanding", "callChatApiCompletionRaw", "callChatApiCompletionStreamRaw"]) {
     const start = source.indexOf(`async function ${name}(`);
     vm.runInContext(source.slice(start, source.indexOf("\n}\n", start) + 2), scope);
@@ -214,6 +283,35 @@ test("all four real request paths send independently selected inference routes",
   mainConfig.provider = "deepseek";
   await scope.testChatApiConnection();
   assert.equal(sent.at(-1).body.provider, undefined);
+
+  mainConfig.provider = "gemini";
+  mainConfig.model = "";
+  scope.getChatApiModel = () => "";
+  const requestsBefore = sent.length;
+  const missing = await scope.testChatApiConnection();
+  assert.equal(missing.ok, false);
+  assert.match(missing.message, /尚未設定.*模型/u);
+  await assert.rejects(scope.callChatApiCompletionRaw({ messages: [] }), /尚未設定.*模型/u);
+  await assert.rejects(scope.callChatApiCompletionStreamRaw({ messages: [] }), /尚未設定.*模型/u);
+  assert.equal(sent.length, requestsBefore, "missing model must not send or bill any request");
+
+  mainConfig.completionsUrl = "https://gateway.test/deployments/gemini-2.5-pro/chat/completions?api-version=v1";
+  await scope.testChatApiConnection();
+  await assert.rejects(scope.callChatApiCompletionRaw({ messages: [] }), /mock transport stopped/u);
+  await assert.rejects(scope.callChatApiCompletionStreamRaw({ messages: [] }), /mock transport stopped/u);
+  assert.equal(sent.length, requestsBefore + 3, "deployment URL may omit the model");
+  assert.ok(sent.slice(requestsBefore).every(request => !Object.hasOwn(request.body, "model")));
+
+  Object.assign(mainConfig, { provider: "gemini", model: "gemini-4-argon", reasoningEffort: "medium", completionsUrl: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions" });
+  scope.getChatApiModel = () => mainConfig.model;
+  scope.getChatApiReasoningEffort = () => mainConfig.reasoningEffort;
+  const googleRequestsBefore = sent.length;
+  await scope.testChatApiConnection();
+  await assert.rejects(scope.requestChatImageUnderstanding(), /mock transport stopped/u);
+  await assert.rejects(scope.callChatApiCompletionRaw({ messages: [] }), /mock transport stopped/u);
+  await assert.rejects(scope.callChatApiCompletionStreamRaw({ messages: [] }), /mock transport stopped/u);
+  assert.equal(sent.length, googleRequestsBefore + 4);
+  assert.ok(sent.slice(googleRequestsBefore).every(request => request.body.reasoning_effort === "medium" && request.body.model === "gemini-4-argon"));
 });
 
 test("all OpenRouter key groups are excluded from global and author defaults", () => {
@@ -223,7 +321,7 @@ test("all OpenRouter key groups are excluded from global and author defaults", (
   vm.runInContext(source.slice(constants, source.indexOf("\n]);", constants) + 4), scope);
   const start = source.indexOf("function isDefaultEnvSecretKey(");
   vm.runInContext(source.slice(start, source.indexOf("\n}", start) + 2), scope);
-  for (const key of ["OPENROUTER_API_KEY", "OPENROUTER_API_KEY2", "OPENROUTER_API_KEY_GROUP2", "OPENROUTER_API_KEY_GROUP2_2", "CHAT_IMAGE_API_KEY"]) {
+  for (const key of ["OPENROUTER_API_KEY", "OPENROUTER_API_KEY2", "OPENROUTER_API_KEY_GROUP2", "OPENROUTER_API_KEY_GROUP2_2", "OPENROUTER_API_KEY_GROUP10", "CHAT_API_KEY_GROUP10_12", "deepseek_key12", "CHAT_IMAGE_API_KEY", "API_PROXY_URL", "API_PROXY_USERNAME", "API_PROXY_PASSWORD"]) {
     assert.equal(scope.isDefaultEnvSecretKey(key), true, key);
   }
   assert.equal(scope.isDefaultEnvSecretKey("OPENROUTER_MODEL"), false);
@@ -234,12 +332,14 @@ test("runtime, connection tests and image config enforce official URLs but prese
   const env = {};
   const scope = vm.createContext({
     process: { env }, DEFAULT_CHAT_API_PROVIDER: "deepseek", DEFAULT_CHAT_API_MODEL: "default",
+    state: { conversationSettings: { chatOutputModel: "legacy-deepseek-model" } },
+    normalizeConversationSettings: value => value, getAppDefaultEnvText: key => key === "CHAT_API_MODEL" ? "author-deepseek-model" : "",
     normalizeChatApiRetryCount,
     safeText: (value) => String(value ?? "").trim(), buildChatApiCompletionsUrl, resolveChatApiModelForEndpoint,
-    resolveChatApiKeyGroupPrimaryKey, resolveChatApiReasoningEffort: () => "", getChatApiRequestTimeoutMs: () => 30000,
+    resolveChatApiKey, resolveChatApiReasoningEffort: () => "", getChatApiRequestTimeoutMs: () => 30000,
     getChatApiReasoningEffort: () => "", normalizeChatApiMaxTokensParamName: () => "max_tokens"
   });
-  for (const name of ["envFirstText", "envObjectFirstText", "envObjectFirstNumber", "normalizeChatApiProvider", "getChatApiProvider", "getDefaultChatApiBaseUrl", "getChatApiBaseUrl", "getChatApiCompletionsUrlFromBaseUrl", "getChatApiProviderBaseUrlAliases", "getChatApiProviderModelAliases", "getChatApiKeyGroupPrimaryKey", "resolveChatImageApiConfig", "resolveChatApiTestConfig"]) {
+  for (const name of ["envFirstText", "envObjectFirstText", "envObjectFirstNumber", "normalizeChatApiProvider", "getChatApiProvider", "getDefaultChatApiBaseUrl", "getChatApiBaseUrl", "getChatApiCompletionsUrlFromBaseUrl", "getChatApiCompletionsUrl", "getChatApiProviderBaseUrlAliases", "getChatApiProviderModelAliases", "getPrimaryChatApiKey", "getChatApiModel", "resolveChatImageApiConfig", "resolveChatApiTestConfig"]) {
     const start = source.indexOf(`function ${name}(`);
     assert.ok(start >= 0, name);
     vm.runInContext(source.slice(start, source.indexOf("\n}", start) + 2), scope);
@@ -250,8 +350,23 @@ test("runtime, connection tests and image config enforce official URLs but prese
     const expected = provider === "custom" ? base : getOfficialChatApiBaseUrl(provider);
     assert.equal(scope.getChatApiBaseUrl(), expected);
     assert.equal(scope.resolveChatApiTestConfig(env).baseUrl, expected);
+    assert.equal(scope.resolveChatApiTestConfig(env).model, provider === "deepseek" ? "default" : "");
+    assert.equal(scope.getChatApiModel(), provider === "deepseek" ? "author-deepseek-model" : "");
     assert.equal(scope.resolveChatImageApiConfig({ CHAT_IMAGE_API_PROVIDER: provider, CHAT_IMAGE_API_BASE_URL: base }).baseUrl, expected);
+    const modelKey = scope.getChatApiProviderModelAliases(provider)[0];
+    const selectedModel = `${provider}-test-model`;
+    env[modelKey] = selectedModel;
+    assert.equal(scope.getChatApiModel(), selectedModel);
+    assert.equal(scope.resolveChatApiTestConfig(env).model, selectedModel);
+    assert.equal(scope.resolveChatImageApiConfig({ CHAT_IMAGE_API_PROVIDER: provider, CHAT_IMAGE_API_MODEL: selectedModel }).model, selectedModel);
+    delete env[modelKey];
   }
   assert.equal(scope.resolveChatApiTestConfig({ CHAT_API_PROVIDER: "openrouter", CHAT_API_OPENROUTER_PROVIDER: "deepinfra/fp8", CHAT_IMAGE_API_OPENROUTER_PROVIDER: "azure/us" }).openrouterProvider, "deepinfra/fp8");
   assert.equal(scope.resolveChatImageApiConfig({ CHAT_IMAGE_API_PROVIDER: "openrouter", CHAT_API_OPENROUTER_PROVIDER: "deepinfra/fp8", CHAT_IMAGE_API_OPENROUTER_PROVIDER: "azure/us" }).openrouterProvider, "azure/us");
+  Object.assign(env, { CHAT_API_PROVIDER: "gemini", CHAT_API_MODEL: "models/gemini-2.5-flash" });
+  assert.equal(scope.getChatApiModel(), "gemini-2.5-flash");
+  assert.equal(scope.resolveChatApiTestConfig(env).model, "gemini-2.5-flash");
+  assert.equal(scope.resolveChatImageApiConfig({ CHAT_IMAGE_API_PROVIDER: "gemini", CHAT_IMAGE_API_MODEL: "models/gemini-2.5-pro" }).model, "gemini-2.5-pro");
+  Object.assign(env, { CHAT_API_PROVIDER: "deepseek", CHAT_API_MODEL: "" });
+  assert.equal(scope.getChatApiModel(), "legacy-deepseek-model");
 });
