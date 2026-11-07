@@ -6,7 +6,7 @@
     <title>時分居酒屋</title>
     <link rel="icon" type="image/png" href="/assets/img/icon.png" />
     <link rel="apple-touch-icon" href="/assets/img/icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=20261027-pricing-sources" />
+    <link rel="stylesheet" href="/styles.css?v=20261107-supplement-actions" />
     <link rel="modulepreload" href="/ui-language.js" />
     <link rel="modulepreload" href="/vendor/opencc-t2cn.js" />
     <link rel="modulepreload" href="/vendor/opencc-cn2t.js" />
@@ -40,12 +40,34 @@
             稱呼
             <input id="displayName" type="text" placeholder="例如：小翼" />
           </label>
-          <label>
-            自訂補充
-            <textarea id="identityText" rows="3" placeholder="會附加到每次使用者發言最後"></textarea>
-          </label>
+          <div class="supplement-editor">
+            <label for="identityText">自訂補充</label>
+            <div class="supplement-toolbar">
+              <select id="supplementPresetSelect" aria-label="自訂補充版本"><option value="">目前內容／未選版本</option></select>
+              <button id="supplementNew" type="button" class="muted" title="新增空白版本" aria-label="新增空白補充">＋</button>
+              <details class="supplement-menu"><summary aria-label="補充版本操作" title="版本操作">⋯</summary><div>
+                <p id="supplementMenuStatus" class="supplement-menu-status"></p>
+                <button id="supplementUpdate" type="button" class="muted">更新目前版本</button>
+                <button id="supplementRename" type="button" class="muted">改名</button>
+                <button id="supplementDelete" type="button" class="muted">刪除收藏</button>
+                <button id="supplementImport" type="button" class="muted">匯入版本</button>
+                <button id="supplementExport" type="button" class="muted">匯出目前內容</button>
+              </div></details>
+            </div>
+            <div id="supplementConfirmRow" class="supplement-name-row" role="alert" hidden>
+              <span id="supplementConfirmMessage">目前內容尚未保存或套用，繼續會取代編輯框內容。</span>
+              <div><button id="supplementReplaceYes" type="button" class="muted">繼續切換</button><button id="supplementReplaceNo" type="button" class="muted">保留內容</button></div>
+            </div>
+            <div id="supplementNameRow" class="supplement-name-row" hidden>
+              <label>版本名稱<input id="supplementName" maxlength="120" /></label>
+              <div><button id="supplementNameConfirm" type="button" class="muted">確認</button><button id="supplementNameCancel" type="button" class="muted">取消</button></div>
+            </div>
+            <textarea id="identityText" rows="5" placeholder="會附加到每次使用者發言最後" aria-describedby="supplementStatus"></textarea>
+            <p id="supplementStatus" class="supplement-status" aria-live="polite"></p>
+            <input id="supplementFile" type="file" accept=".json,application/json" hidden />
+          </div>
           <p class="form-hint">可使用 {{user}} 代表稱呼，{{chur}} 代表目前角色卡名字。</p>
-          <button type="submit">保存使用者設定</button>
+          <div class="supplement-save-row"><button type="submit">儲存使用者設定</button><button type="button" id="supplementSaveAs" class="muted">另存新版本</button></div>
         </form>
 
         <div class="actions-block">
@@ -105,6 +127,7 @@
                 <span class="sr-only">選擇對話故事</span>
                 <select id="conversationContextSelect" aria-label="選擇對話故事"></select>
               </label>
+              <button id="openPromptQuickSwitch" type="button" class="icon-button" title="對話預設" aria-label="對話預設">☷</button>
               <button id="chatHistoryEdgeBtn" type="button" class="icon-button history-jump-button" title="跳到最早訊息" aria-label="跳到最早訊息">⇈</button>
               <button id="deleteConversationContextBtn" type="button" class="icon-button context-delete-button" title="刪除目前 Discord 頻道故事" aria-label="刪除目前 Discord 頻道故事">×</button>
               <button id="stopChatBtn" type="button" class="icon-button" title="停止正在生成的回覆">■</button>
@@ -683,8 +706,34 @@
       </form>
     </dialog>
 
+    <dialog id="promptSelectionDialog" class="dialog preset-selection-dialog" aria-labelledby="promptSelectionHeading">
+      <div class="preset-dialog-heading"><h3 id="promptSelectionHeading">對話預設</h3><button type="button" id="closePromptQuickSwitch" class="icon-button" aria-label="關閉對話預設">×</button></div>
+      <div id="promptQuickSwitch">
+        <div class="preset-selection-row"><label>模式預設<select id="conversationPromptMode" aria-label="目前對話模式"></select></label><button type="button" id="editConversationPrompt" class="muted">編輯</button></div>
+        <div class="preset-selection-row"><label>正文規則<select id="conversationBodyRule" aria-label="目前對話正文規則"></select></label><button type="button" id="editConversationBodyRule" class="muted">管理</button></div>
+        <p id="promptSelectionHint" class="preset-hint">僅套用目前對話，選擇後自動保存。</p>
+      </div>
+    </dialog>
+    <dialog id="bodyRuleDialog" class="dialog body-rule-dialog" aria-labelledby="bodyRuleHeading">
+      <form id="bodyRuleForm">
+        <header class="body-rule-heading"><h3 id="bodyRuleHeading">正文規則</h3><button type="button" id="bodyRuleClose" class="icon-button" aria-label="關閉正文規則">×</button></header>
+        <div class="body-rule-content">
+          <div class="body-rule-library-row">
+            <label>規則收藏<select id="bodyRuleEditorSelect"></select></label>
+            <div class="body-rule-library-actions"><button type="button" id="bodyRuleNew" class="muted">新增</button><button type="button" id="bodyRuleImport" class="muted">匯入</button><button type="button" id="bodyRuleExport" class="muted">匯出</button></div>
+          </div>
+          <label>名稱<input id="bodyRuleName" maxlength="120" required /></label>
+          <label>正文主要規則<textarea id="bodyRuleMain" rows="6"></textarea></label>
+          <label>正文輸出規則<textarea id="bodyRuleOutput" rows="5"></textarea></label>
+          <div class="body-rule-utilities"><button type="button" id="bodyRuleFromMode" class="muted">從目前模式帶入</button><button type="button" id="bodyRuleDelete" class="body-rule-danger">刪除</button></div>
+          <p class="preset-hint">保存會更新共用版本；要保留舊版請另存新版本。請從對話預設中選用。</p>
+        </div>
+        <footer class="body-rule-footer"><button type="button" id="bodyRuleSaveAs" class="muted">另存新版本</button><button type="submit">儲存</button></footer>
+        <input type="file" id="bodyRuleFile" accept=".json,application/json" hidden />
+      </form>
+    </dialog>
     <div id="toast" class="toast"></div>
     <script src="/effects.js?v=20260525-low-power" defer></script>
-    <script type="module" src="/app.js?v=20261107-upstream-custom-merge"></script>
+    <script type="module" src="/app.js?v=20261107-supplement-actions"></script>
   </body>
 </html>

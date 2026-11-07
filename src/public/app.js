@@ -1,3 +1,7 @@
+import { bindSupplementEditor } from "./supplement-editor.js?v=20261107-actions";
+let supplementEditor = null;
+import { bindPromptQuickSwitch } from "./prompt-quick-switch.js?v=20261107-dialog";
+let promptQuickSwitch = null;
 import {
   canDisableChatApiReasoning,
   createChatApiProviderDrafts,
@@ -1532,7 +1536,8 @@ function summarizeRoleCardLorebooks(value) {
 
 function getActivePromptMode(state) {
   const activeCard = (state?.roleCards || []).find((card) => card.id === state?.activeRoleCardId);
-  return normalizeRoleCardMode(activeCard?.mode);
+  return normalizeRoleCardMode(state?.promptSelection?.mode && state?.modularPromptConfigs?.[state.promptSelection.mode]
+    ? state.promptSelection.mode : activeCard?.mode);
 }
 
 function isAssistantActive(state) {
@@ -4813,7 +4818,8 @@ function applyMobilePage() {
 function fillProfile(state) {
   const { userProfile } = state;
   el.displayName.value = userProfile.displayName || "";
-  el.identityText.value = userProfile.identityText || "";
+  if (supplementEditor) supplementEditor.render(state);
+  else el.identityText.value = userProfile.identityText || "";
 }
 
 function renderRoleCards(state) {
@@ -6291,6 +6297,7 @@ function renderAiLogs(state) {
 }
 
 function renderStatus(state) {
+  promptQuickSwitch?.render(state);
   const discordAuthorizeUrl = state.discord?.authorizeUrl || "";
   const hasConversationTarget = Boolean(state.aiSessionStarted && (state.activeRoleCardId || isAssistantActive(state)));
   const display = getWebDisplayConfig(state);
@@ -6621,6 +6628,7 @@ function renderPromptModeOptions(select, selectedMode = "single") {
 }
 
 function renderAllPromptModeSelects(selectedMode = "") {
+  promptQuickSwitch?.render(appState);
   const mode = normalizeRoleCardMode(selectedMode || el.modularPromptModeSelect?.value || el.roleCardMode?.value || getActivePromptMode(appState));
   renderPromptModeOptions(el.modularPromptModeSelect, mode);
   renderPromptModeOptions(el.roleCardMode, el.roleCardMode?.value || mode);
@@ -9463,6 +9471,16 @@ async function removeRoleCard(card) {
 }
 
 function bindEvents() {
+  supplementEditor = bindSupplementEditor({ getState: () => appState, setState: state => { appState = state; }, request, showToast,
+    download: payload => triggerBlobDownload(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }), sanitizeDownloadFileName(payload.preset.name) + ".json")
+  });
+  promptQuickSwitch = bindPromptQuickSwitch({
+    getState: () => appState,
+    setState: state => { appState = state; renderStatus(state); },
+    request, showToast, getMode: getActivePromptMode,
+    editMode: mode => { openModularPromptDialog(); renderModularPromptEditor(mode); },
+    download: payload => triggerBlobDownload(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }), sanitizeDownloadFileName(payload.rule.name) + ".json")
+  });
   if (el.chatHistoryEdgeBtn) {
     el.chatHistoryEdgeBtn.addEventListener("click", jumpConversationHistoryEdge);
   }
@@ -9630,14 +9648,16 @@ function bindEvents() {
   el.profileForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     try {
-      await request("/api/user-profile", {
+      const savedProfileState = await request("/api/user-profile", {
         method: "PUT",
         body: JSON.stringify({
           displayName: el.displayName.value,
-          identityText: el.identityText.value
+          identityText: el.identityText.value,
+          supplementPresetId: supplementEditor?.getSelectedId() || ""
         })
       });
       await refresh();
+      supplementEditor?.markApplied(savedProfileState);
       showToast("已保存使用者設定");
     } catch (error) {
       showToast(error.message, "error");

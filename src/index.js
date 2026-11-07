@@ -1,5 +1,7 @@
+import { validateSupplement, readSupplementPresets } from "./supplement-presets.js";
 // Load .env explicitly after any pending data restore.
 import dotenv from "dotenv";
+import { normalizePromptSelection, validateBodyRule, readBodyRules, resolvePromptSelection } from "./prompt-selection.js";
 import { validateCardBackup } from "./card-backup.js";
 import { applyPendingDataArchive, createDataArchive, stageDataArchive, DATA_ARCHIVE_MAX_BYTES } from "./data-backup.js";
 import { startupEnvironment, usesContainerRestart, restartEnvironment } from "./server-restart.js";
@@ -159,6 +161,8 @@ const DEFAULTS_DIR = path.join(__dirname, "..", "defaults");
 const ENV_FILE = path.join(__dirname, "..", ".env");
 const BUNDLED_APP_DEFAULTS_FILE = path.join(DEFAULTS_DIR, "app-defaults.json");
 const APP_DEFAULTS_FILE = path.join(DATA_DIR, "app-defaults.json");
+const SUPPLEMENT_PRESETS_FILE = path.join(DATA_DIR, "supplement-presets.json");
+const BODY_RULES_FILE = path.join(DATA_DIR, "body-rule-presets.json");
 const STATE_FILE = path.join(DATA_DIR, "app-state.json");
 const CARD_STATE_FILE = path.join(DATA_DIR, "cardstate.json");
 const AI_LOGS_FILE = path.join(DATA_DIR, "ai-logs.json");
@@ -1588,6 +1592,7 @@ function resetConversationProgress(currentState, options = {}) {
     return;
   }
   currentState.conversation = [];
+  currentState.promptSelection = normalizePromptSelection();
   currentState.turnState = createDefaultTurnState();
   if (options.resetTimeTracking !== false) {
     resetTimeTrackingProgress(currentState);
@@ -2153,6 +2158,7 @@ function loadState() {
       roleCardRuntimeState: normalizeRoleCardRuntimeStateMap(parsed.roleCardRuntimeState),
       activeRoleCardId: safeText(parsed.activeRoleCardId) || null,
       activeAssistantMode: normalizeAssistantMode(parsed.activeAssistantMode),
+      promptSelection: normalizePromptSelection(parsed.promptSelection),
       conversationSettings: normalizeConversationSettings(parsed.conversationSettings),
       contextCompression: normalizeContextCompressionState(parsed.contextCompression),
       timeTracking: normalizeTimeTrackingState(parsed.timeTracking),
@@ -2285,6 +2291,7 @@ function saveState(state) {
     roleCardRuntimeState: _roleCardRuntimeState,
     activeRoleCardId: _activeRoleCardId,
     activeAssistantMode: _activeAssistantMode,
+    promptSelection: _promptSelection,
     contextCompression: _contextCompression,
     aiSessionStarted: _aiSessionStarted,
     pendingOpeningBroadcast: _pendingOpeningBroadcast,
@@ -2621,6 +2628,7 @@ function migrateConversationContextAiLogsToShared(currentState) {
 
 function captureRuntimeSnapshot(currentState) {
   return {
+    promptSelection: normalizePromptSelection(currentState.promptSelection),
     userProfile: cloneData(currentState.userProfile, createDefaultState().userProfile),
     roleCards: cloneData(currentState.roleCards, []).map((card) => normalizeRoleCard(card)),
     assistantCards: normalizeAssistantCards(currentState.assistantCards),
@@ -2647,6 +2655,7 @@ function captureSavedConversationSnapshot(currentState) {
   const activeAssistantMode = normalizeAssistantMode(currentState.activeAssistantMode);
   const roleCardRuntimeState = normalizeRoleCardRuntimeStateMap(currentState.roleCardRuntimeState);
   return {
+    promptSelection: normalizePromptSelection(currentState.promptSelection),
     activeRoleCardId,
     activeAssistantMode,
     aiSessionStarted: Boolean(currentState.aiSessionStarted),
@@ -2742,6 +2751,7 @@ function restoreNarrativeStateForReplay(currentState, targetMessageIndex) {
 function applyRuntimeSnapshot(currentState, snapshot) {
   const defaults = createDefaultState();
   const source = snapshot && typeof snapshot === "object" ? snapshot : {};
+  currentState.promptSelection = normalizePromptSelection(source.promptSelection);
 
   currentState.userProfile = normalizeUserProfile({
     ...defaults.userProfile,
@@ -2780,6 +2790,7 @@ function applyRuntimeSnapshot(currentState, snapshot) {
 
 function applySavedConversationSnapshot(currentState, snapshot) {
   const source = snapshot && typeof snapshot === "object" ? snapshot : {};
+  currentState.promptSelection = normalizePromptSelection(source.promptSelection);
   const currentTimeTracking = normalizeTimeTrackingState(currentState.timeTracking);
   const savedTimeTracking = source.timeTracking && typeof source.timeTracking === "object"
     ? normalizeTimeTrackingState(source.timeTracking)
@@ -2943,6 +2954,7 @@ function getConversationContextFilePath(contextId = "") {
 
 function captureConversationContextSnapshot(currentState) {
   return {
+    promptSelection: normalizePromptSelection(currentState.promptSelection),
     activeRoleCardId: safeText(currentState.activeRoleCardId) || null,
     activeAssistantMode: normalizeAssistantMode(currentState.activeAssistantMode),
     aiSessionStarted: Boolean(currentState.aiSessionStarted),
@@ -2980,6 +2992,7 @@ function createEmptyConversationContextSnapshot(currentState, contextId = LOCAL_
 
 function applyConversationContextSnapshot(currentState, snapshot = {}, contextId = LOCAL_CONVERSATION_CONTEXT_ID) {
   const source = snapshot && typeof snapshot === "object" ? snapshot : {};
+  currentState.promptSelection = normalizePromptSelection(source.promptSelection);
   const normalizedContextId = normalizeConversationContextId(contextId) || LOCAL_CONVERSATION_CONTEXT_ID;
   const channelId = getConversationContextChannelId(normalizedContextId);
   const activeRoleCardId = safeText(source.activeRoleCardId);
@@ -5111,6 +5124,7 @@ function normalizeUserProfile(input) {
   const raw = input && typeof input === "object" ? input : {};
   return {
     identityText: safeText(raw.identityText),
+    supplementPresetId: safeText(raw.supplementPresetId),
     displayName: safeText(raw.displayName)
   };
 }
@@ -7610,7 +7624,8 @@ function buildCharacterCardCreationAssistantSystemPrompt(state) {
 
 function getActiveModularPromptConfig(currentState = null) {
   const activeRoleCard = getActiveRoleCard(currentState);
-  return getModularPromptConfig(normalizeRoleCardMode(activeRoleCard?.mode));
+  return resolvePromptSelection(getModularPromptConfigStore(), normalizeRoleCardMode(activeRoleCard?.mode),
+    currentState?.promptSelection, readBodyRules(BODY_RULES_FILE));
 }
 
 function formatModularRoleContext(state, activeRoleCard, resolvedUserName = "", options = {}) {
@@ -11616,6 +11631,9 @@ function statePayload(currentState, options = {}) {
     aiLogs: compactedAiLogs.logs,
     aiLogContentStore: compactedAiLogs.contentStore,
     modularPromptConfigs: getModularPromptConfigsPayload(),
+    bodyRulePresets: readBodyRules(BODY_RULES_FILE),
+    supplementPresets: readSupplementPresets(SUPPLEMENT_PRESETS_FILE),
+    promptSelection: normalizePromptSelection(payloadState.promptSelection),
     contextCompressionPrompt: getContextCompressionPrompt(),
     characterCardCreationAssistantPrompt: getCharacterCardCreationAssistantPrompt(),
     webDisplay: getWebChatDisplayConfig(payloadState),
@@ -12937,6 +12955,48 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (pathname === "/api/prompt-selection" && method === "PUT") {
+      const body = await readBody(req);
+      const payload = await withStateLock(() => {
+        const selection = normalizePromptSelection(body);
+        if (selection.mode && !Object.hasOwn(getModularPromptConfigStore(), selection.mode)) throw new Error("模式不存在，請重新選擇");
+        if (selection.bodyRuleId && !readBodyRules(BODY_RULES_FILE).some(rule => rule.id === selection.bodyRuleId)) throw new Error("正文規則不存在，請重新選擇");
+        state.promptSelection = selection;
+        saveState(state);
+        return statePayload(state);
+      });
+      sendJson(res, 200, payload);
+      return;
+    }
+
+    if (pathname === "/api/body-rule-presets" && method === "POST") {
+      const body = await readBody(req);
+      const payload = await withStateLock(() => {
+        const rule = { id: newId("body"), ...validateBodyRule(body) };
+        const rules = readBodyRules(BODY_RULES_FILE);
+        rules.push(rule);
+        writeJsonFile(BODY_RULES_FILE, rules);
+        return { rule, state: statePayload(state) };
+      });
+      sendJson(res, 200, payload);
+      return;
+    }
+    const bodyRuleMatch = pathname.match(/^\/api\/body-rule-presets\/(body_[a-zA-Z0-9_-]+)$/);
+    if (bodyRuleMatch && ["PUT", "DELETE"].includes(method)) {
+      const body = method === "PUT" ? await readBody(req) : null;
+      const payload = await withStateLock(() => {
+        const rules = readBodyRules(BODY_RULES_FILE);
+        const index = rules.findIndex(rule => rule.id === bodyRuleMatch[1]);
+        if (index < 0) throw new Error("正文規則不存在");
+        if (method === "DELETE") rules.splice(index, 1);
+        else rules[index] = { id: bodyRuleMatch[1], ...validateBodyRule(body) };
+        writeJsonFile(BODY_RULES_FILE, rules);
+        return statePayload(state);
+      });
+      sendJson(res, 200, payload);
+      return;
+    }
+
     if (pathname === "/api/conversation-settings" && method === "PUT") {
       const body = await readBody(req);
       state.conversationSettings = normalizeConversationSettings({
@@ -13240,6 +13300,32 @@ const server = http.createServer(async (req, res) => {
       saveState(state);
       sendJson(res, 200, { state: statePayload(state) });
       return;
+    }
+
+    if (pathname === "/api/supplement-presets" && method === "POST") {
+      const body = await readBody(req);
+      const payload = await withStateLock(() => {
+        const preset = { id: newId("supplement"), ...validateSupplement(body) };
+        const presets = readSupplementPresets(SUPPLEMENT_PRESETS_FILE);
+        presets.push(preset);
+        writeJsonFile(SUPPLEMENT_PRESETS_FILE, presets);
+        return { preset, state: statePayload(state) };
+      });
+      sendJson(res, 200, payload); return;
+    }
+    const supplementMatch = pathname.match(/^\/api\/supplement-presets\/(supplement_[a-zA-Z0-9_-]+)$/);
+    if (supplementMatch && ["PUT", "DELETE"].includes(method)) {
+      const body = method === "PUT" ? await readBody(req) : null;
+      const payload = await withStateLock(() => {
+        const presets = readSupplementPresets(SUPPLEMENT_PRESETS_FILE);
+        const index = presets.findIndex(preset => preset.id === supplementMatch[1]);
+        if (index < 0) throw new Error("補充版本不存在");
+        if (method === "DELETE") presets.splice(index, 1);
+        else presets[index] = { id: supplementMatch[1], ...validateSupplement(body) };
+        writeJsonFile(SUPPLEMENT_PRESETS_FILE, presets);
+        return statePayload(state);
+      });
+      sendJson(res, 200, payload); return;
     }
 
     if (pathname === "/api/user-profile" && method === "PUT") {

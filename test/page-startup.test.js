@@ -22,6 +22,9 @@ test("summary state skips log compaction but preserves all conversations and log
   let compactions = 0;
   const context = vm.createContext({
     getWebConversationStateView: value => value,
+    readBodyRules: () => [], BODY_RULES_FILE: "unused-test-path",
+    readSupplementPresets: () => [], SUPPLEMENT_PRESETS_FILE: "unused-test-path",
+    normalizePromptSelection: value => value || { mode: "", bodyRuleId: "" },
     normalizeAiLog: value => value,
     compactAiLogsForStorage(logs) { compactions += 1; return { logs, contentStore: {} }; },
     normalizeConversationForClient: value => value,
